@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"os"
 )
 
 type User struct {
@@ -33,9 +34,13 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/user", userHandler)
 
-	// CORS for local dev
-	handler := func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
+	origin := os.Getenv("FRONTEND_URL")
+	if origin == "" {
+		origin = "*" // local dev
+	}
+
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", origin)
 		w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
 		if r.Method == http.MethodOptions {
@@ -43,8 +48,13 @@ func main() {
 			return
 		}
 		mux.ServeHTTP(w, r)
+	})
+
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
 	}
 
-	log.Println("Listening on :8080")
-	log.Fatal(http.ListenAndServe(":8080", handler))
+	log.Println("Listening on :" + port)
+	log.Fatal(http.ListenAndServe(":"+port, handler))
 }
