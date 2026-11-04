@@ -4,49 +4,80 @@
 
 ## What this project is
 
-This project is a **small demo website** with two parts: a **form on the web** and a **server program**.
+The **Inovix Labs Demo App** is a small **two-part website**:
 
-- On the **website**, someone types their **name, age, and gender** and clicks **"Submit to Backend"**.
-- The website sends those details to the **server program**, which **writes them into a log** (like a notepad) and says **"ok"**.
-- The website then shows **"Sent successfully!"** or an error message.
+- A **web app** in the browser with two screens:
+  - **Create Account** — collects first name, last name, email, password, age, gender.
+  - **Sign In** — collects email + password.
+- A **server program** behind the scenes that receives the "Create Account" submission.
 
-## What it does NOT do
+## What actually happens when someone signs up
 
-- It doesn't save data to a database.
-- It doesn't have accounts or logins.
-- It doesn't store anything permanently.
+1. The person fills in the **Create Account** form and clicks **Create Account**.
+2. The web app **sends the details** to the server.
+3. The server either:
+   - **Saves the details to a database** (if a database is configured), or
+   - **Just looks at them and replies "ok"** without saving (if no database is configured — the default for quick local runs).
+4. The web app shows **"Registration successful!"** and clears the form.
 
-It's a learning/prototype app to show the two sides talking to each other.
+## What the Sign In screen does (important)
+
+The **Sign In** screen currently **does not check any credentials**. It pretends to log in for about one second and then shows **"Login successful!"**.
+
+👉 **This is a placeholder.** It is not real authentication and does not talk to the server. Do not use it to gate access to anything sensitive.
+
+## What data is and is not stored
+
+| Field | Sent by the form? | Saved in the database (when a DB is configured)? |
+|-------|------------------|---------------------------------------------------|
+| First name | ✅ | Only as part of the combined `name` |
+| Last name | ✅ | Only as part of the combined `name` |
+| Email | ✅ | ❌ **not saved** |
+| Password | ✅ | ❌ **not saved** |
+| Age | ✅ | ✅ |
+| Gender | ✅ | ✅ |
+
+> ⚠️ **Security note for stakeholders:** Passwords are transmitted in plain form to the server but are **not stored** by the current backend. In a real product, this would be unacceptable — passwords must be hashed on the server (and the connection must be HTTPS). Treat this as a demo.
+
+## Two ways the server can run
+
+Think of the server as having two personalities:
+
+1. **"Memory-only" mode (default):** It receives the signup, replies "ok", and **forgets it immediately**. Useful for showing the UI without setting up a database. In this mode the **browser may refuse to display the server's reply** because of a missing "permission" header (CORS) — a known gap, not a bug in your data.
+2. **"Database" mode:** The server is pointed at a PostgreSQL database at startup; it creates a `users` table if missing and **saves every signup** there. It also exposes a small health-check URL (`/health`) that cloud platforms can poll to know the service is alive.
+
+## What "done" would look like for a bigger version
+
+If this becomes a real product, the obvious next steps (in plain terms):
+
+1. **Real sign-in** — passwords hashed and verified on the server; a login endpoint; sessions or tokens.
+2. **Save email and password** — currently they're thrown away.
+3. **Input validation** — reject nonsense ages, empty names, bad genders, with friendly messages.
+4. **Account page / dashboard** — a screen listing registered users or the current user's profile.
+5. **Email verification** — confirm the email address belongs to the person.
+6. **Deployment polish** — CI, Docker, HTTPS, and monitoring.
 
 ## Who is involved and what they care about
 
 | Role | What they do here |
 |------|-------------------|
-| **Developers** | Change the form (frontend) or the server logic (backend). |
-| **DevOps** | Deploy the website to a hosting service and the server program to a cloud server. They set two small settings: where the website sends data, and which website is allowed to talk to the server. |
-| **Testers** | Verify the form sends data correctly and the server replies with success/errors as expected. |
-| **Project managers** | Consider this the "hello world" baseline. The next steps would be adding data saving, logins, and input validation. |
-
-## What "done" would look like for a bigger version
-
-If this were to become a real product, the obvious next steps (in plain terms) are:
-
-1. **Save the data** — write it to a database instead of just a log.
-2. **Add logins** — so only authorized staff can submit.
-3. **Validate inputs** — e.g. reject an age of 500 or an empty name with a friendly message.
-4. **Better error messages** — tell the user *why* something failed, not just "Error".
-5. **A dashboard** — a page to view submitted entries.
+| **Developers** | Change the web screens (frontend) or the server logic (backend). |
+| **DevOps** | Deploy the web app to a static host (needs "SPA history fallback") and the server to a cloud container; provide `DATABASE_URL`, `FRONTEND_URL`, `PORT`, and build the frontend with the correct `VITE_API_URL`. |
+| **Testers** | Verify the UI flows and the API in **both** server modes (memory-only and database). |
+| **Project managers** | Treat this as a **demo baseline**. Use the "bigger version" list above to scope the next milestone. |
 
 ## Glossary (plain-English)
 
-- **Frontend** — the part users see in the browser (the form).
-- **Backend** — the program running on a server that receives and processes submissions.
-- **API** — the agreed way the frontend and backend talk to each other (here: a single "submit a user" request).
-- **JSON** — a simple text format for sending data (looks like `{"name": "Alice", "age": 30}`).
-- **Server / port** — a computer program listening for requests; a "port" is like a numbered door it listens on (frontend: 3000, backend: 8080 in development).
-- **CORS** — a browser security rule that makes the backend explicitly say "yes, this website is allowed to talk to me".
-- **Environment variable** — a setting stored outside the code (e.g. "where should the form send data?") so the same code can run in dev, staging, and production.
-- **Log** — a running record of events (the backend writes each received submission to its log).
-- **Build** — turning the developer's source files into the final files that get deployed.
-- **Deploy** — putting those final files onto a server so users can access them.
-- **CI (Continuous Integration)** — an automated robot that runs checks (lint, build, tests) every time code changes.
+- **Frontend** — what users see (the web pages).
+- **Backend** — the server program that receives and processes submissions.
+- **API** — the agreed way the frontend and backend exchange data.
+- **JSON** — a simple text format for data (looks like `{"name":"Alice","age":30}`).
+- **Route / router** — in the browser, a URL like `/register` that shows a particular screen without a full page reload.
+- **SPA (Single Page Application)** — a web app that loads once and switches screens in the browser; the hosting service must be told to always serve `index.html` for unknown paths.
+- **CORS** — a browser security rule requiring the server to say "yes, this website may read my response". If the server doesn't say it, the browser hides the response (the request may still have reached the server).
+- **Environment variable** — a setting stored outside the code (e.g. database address, frontend URL).
+- **Database / Postgres** — a service that stores data permanently so it isn't forgotten between requests.
+- **Health check** — a small URL (`/health`) that cloud platforms poll to confirm the server is alive.
+- **Password hashing** — turning a password into a one-way scramble so even server staff can't read it; required for real auth.
+- **Build / deploy** — turning source code into files that run on servers, then putting them online.
+- **CI (Continuous Integration)** — an automated robot that runs lint/build/tests on every code change.

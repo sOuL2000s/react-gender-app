@@ -1,6 +1,6 @@
 # 📘 Project Documentation — Index
 
-**Project:** React Gender App (React + Go full-stack demo)
+**Project:** React Gender App / Inovix Labs auth demo (React + Go + Postgres)
 **Audience:** developers, DevOps, QA, PMs, non-technical stakeholders
 
 ## Where to start
@@ -17,12 +17,18 @@
 
 | File | Covers | Primary owner |
 |------|--------|---------------|
-| [ARCHITECTURE.md](./ARCHITECTURE.md) | Project overview, high-level diagram, end-to-end data flow | Maintainers |
-| [FRONTEND.md](./FRONTEND.md) | React app: stack, entry point, `App.jsx`, styling, assets, Vite, Oxlint, env vars, scripts | Frontend dev |
-| [BACKEND-API.md](./BACKEND-API.md) | Go API: stack, endpoint contract, `User` model, handler, CORS, bootstrap, env vars, quick-reference card | Backend dev |
-| [RUNBOOK.md](./RUNBOOK.md) | Local setup, deployment/DevOps, troubleshooting, sample `.env`, CI scaffold | DevOps |
-| [TESTING.md](./TESTING.md) | Manual QA checklists, suggested automated tests, Definition of Done | QA / all |
+| [ARCHITECTURE.md](./ARCHITECTURE.md) | Project overview, high-level diagram, dual-mode backend, end-to-end data flow | Maintainers |
+| [FRONTEND.md](./FRONTEND.md) | React app: stack, routing, pages (Register/Login), styling, assets, Vite, Oxlint, env vars, scripts | Frontend dev |
+| [BACKEND-API.md](./BACKEND-API.md) | Go API: dual-mode (no-DB vs Postgres), endpoints, models, CORS, health, env vars, API card | Backend dev |
+| [RUNBOOK.md](./RUNBOOK.md) | Local setup, Postgres, deployment/DevOps, troubleshooting, sample `.env`, CI scaffold | DevOps |
+| [TESTING.md](./TESTING.md) | Manual QA checklists (per mode), suggested automated tests, limitations, Definition of Done | QA / all |
 | [NON-TECHNICAL.md](./NON-TECHNICAL.md) | Plain-English summary + glossary | PM / stakeholders |
+
+## Recent changes (v0.1.0 → current)
+
+- **Frontend now multi-page:** `react-router-dom@7`, `/register` and `/login` routes, `/` redirects to `/register`.
+- **Backend now dual-mode:** runs without a DB (in-memory log-only), or with `DATABASE_URL` set → Postgres via `pgx/v5`. Adds `/health` in DB mode only.
+- **Known gap:** frontend sends `email`/`password` but backend does **not** store them; register endpoint is not real auth.
 
 ## Keeping docs in sync
 

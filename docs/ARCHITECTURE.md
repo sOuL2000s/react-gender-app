@@ -5,118 +5,182 @@
 ## Table of contents
 1. [Project Overview](#1-project-overview)
 2. [High-Level Architecture](#2-high-level-architecture)
-3. [End-to-End Data Flow](#3-end-to-end-data-flow)
-4. [Repository Structure (Annotated)](#4-repository-structure-annotated)
+3. [Backend Modes (No-DB vs Postgres)](#3-backend-modes-no-db-vs-postgres)
+4. [End-to-End Data Flow](#4-end-to-end-data-flow)
+5. [Repository Structure (Annotated)](#5-repository-structure-annotated)
+6. [Cross-Cutting Gaps (Read First)](#6-cross-cutting-gaps-read-first)
 
 ---
 
 ## 1. Project Overview
 
-The **React Gender App** is a minimal full-stack demo application that:
+The **React Gender App** (UI branded "Inovix Labs") is a small full-stack demo that lets users **register** with personal details (name, age, gender — plus email/password in the UI) and navigate to a **login** page.
 
-1. Presents a **web form** with three fields: **Name**, **Age**, and **Gender**.
-2. On submit, sends the entered values as **JSON** via HTTP `POST` to a **Go backend**.
-3. The backend **logs the received data** and responds with a JSON success message containing the user's name.
-4. The frontend displays a **status message** ("Sending...", "Sent successfully!", or an error) and a **live JSON preview** of what the user has typed.
+- **Frontend:** React 19 + Vite 8 + React Router 7. Two pages: `/register` (default) and `/login`. A shared branded auth layout (dark slate + purple gradient split panel).
+- **Backend:** Go 1.25 HTTP API with **two operating modes**:
+  - **No-DB mode** (default when `DATABASE_URL` is unset) — in-memory, log-only, no CORS, no `/health`.
+  - **Postgres mode** (when `DATABASE_URL` is set and the connection succeeds) — persists registrations to a `users` table via `pgx/v5`, adds `/health`, enables CORS.
 
-It is intentionally small — a learning/scaffolding project demonstrating how a **Vite + React 19** frontend talks to a **Go 1.22** HTTP API, including CORS handling and environment-variable configuration on both sides.
+**What it is NOT (yet):**
+- Not real authentication — `Login` is simulated client-side; there is no session, JWT, or password verification.
+- Passwords and emails are **sent** by the frontend but **not stored** by the backend (`UserRequest` has no fields for them).
+- No input validation, no rate limiting, no email verification.
 
 **Key characteristics:**
-- No database. Data is logged only.
-- No authentication or authorization.
-- Single API endpoint: `POST /api/user`.
-- Dev-only CORS fallback (`*`) if `FRONTEND_URL` is unset.
+
+| Aspect | Value |
+|--------|-------|
+| Frontend dev port | `3000` (`vite.config.js`) |
+| Backend default port | `8080` (`PORT` env) |
+| Backend endpoints | `/api/user`, `/register`, `/health` (health only in DB mode) |
+| DB (optional) | Postgres via `pgx/v5`; table `users` auto-created |
+| Auth | None (simulated on login page) |
 
 ---
 
 ## 2. High-Level Architecture
 
+### 2a. No-DB mode (default; what you get if you just `go run main.go`)
+
 ```
-┌────────────────────────┐        HTTP POST (JSON)       ┌────────────────────────┐
-│                        │  ──────────────────────────►  │                        │
-│  React Frontend        │     /api/user                 │  Go Backend            │
-│  (Vite dev server      │                               │  (net/http server)     │
-│   on :3000)            │  ◄──────────────────────────  │  on :8080              │
-│                        │  200 OK {status:"ok",...}     │                        │
-└────────────────────────┘                               └────────────────────────┘
-        │                                                        │
-        │ reads VITE_API_URL                                     │ reads PORT,
-        │ (default http://localhost:8080/api/user)               │ FRONTEND_URL
-        │                                                        │
-   Browser env                                             Process env
+┌────────────────────────┐     POST /register (JSON)      ┌────────────────────────┐
+│ React (Vite :3000)     │  ──────────────────────────►   │ Go (net/http :8080)    │
+│  /register, /login     │     (no CORS middleware!)      │  simpleHandler         │
+│  BrowserRouter         │  ◄──────────────────────────   │  (log-only, no DB)     │
+└────────────────────────┘   200 {status:"ok", name}      └────────────────────────┘
 ```
 
-- **Frontend port (dev):** `3000` (set in `vite.config.js`).
-- **Backend port (default):** `8080` (overridable via `PORT`).
-- **Transport:** JSON over HTTP/1.1.
-- **Cross-origin:** Handled by backend CORS middleware (see [BACKEND-API.md §5](./BACKEND-API.md#5-cors-middleware)).
+### 2b. Postgres mode (when `DATABASE_URL` is set and reachable)
+
+```
+┌────────────────────────┐     POST /register (JSON)      ┌────────────────────────┐
+│ React (Vite :3000)     │  ──────────────────────────►   │ Go (net/http :8080)    │
+│                        │   + CORS preflight (OPTIONS)   │  CORS wrapper          │
+│                        │  ◄──────────────────────────   │  userHandler(db)       │
+│                        │  200 {status,id,name}          │  GET /health           │
+└────────────────────────┘                                └──────────┬─────────────┘
+                                                                      │ INSERT INTO users
+                                                                      ▼
+                                                          ┌────────────────────────┐
+                                                          │ PostgreSQL             │
+                                                          │ users(id,name,age,     │
+                                                          │ gender,created_at)     │
+                                                          └────────────────────────┘
+```
+
+**Startup decision tree (from `main`):**
+
+```
+START
+ └─ DATABASE_URL set?
+     ├─ NO  → simpleHandler on /api/user + /register; no CORS; no /health; listen.
+     └─ YES → pgx.Connect()
+               ├─ FAIL → log; simpleHandler; no CORS; no /health; listen.
+               └─ OK   → ensureTable(); userHandler(db) on /api/user + /register;
+                          /health; CORS wrapper; listen.
+```
 
 ---
 
-## 3. End-to-End Data Flow
+## 3. Backend Modes (No-DB vs Postgres)
 
-1. **User** opens `http://localhost:3000` (Vite dev server serves `index.html` + bundled React).
-2. `main.jsx` mounts `App` into `#root`.
-3. User fills **Name**, **Age**, **Gender**.
-4. Presses **"Submit to Backend"**.
-5. `handleSubmit` builds JSON:
+| Concern | No-DB mode | Postgres mode |
+|---------|-----------|----------------|
+| Trigger | `DATABASE_URL` empty OR connect fails | `DATABASE_URL` set + connect OK |
+| Persistence | None (log only) | `INSERT INTO users` |
+| Response body | `{"status":"ok","name":<name>}` | `{"status":"ok","id":<int>,"name":<name>}` |
+| `/health` endpoint | ❌ not registered (404) | ✅ `{"status":"healthy"}` |
+| CORS headers | ❌ **none** (browser will block cross-origin!) | ✅ reflects `FRONTEND_URL` or `*` |
+| Tables created | — | `users` via `CREATE TABLE IF NOT EXISTS` |
+| Implication for dev | Works **same-origin only** (e.g. Vite proxy) or if you don't care about browser CORS errors | Works cross-origin from `:3000` |
+
+> **⚠️ Critical dev ergonomics:** In no-DB mode the frontend at `:3000` calling backend at `:8080` **will fail in the browser** with a CORS error, because the fallback branch registers handlers on a bare `http.ServeMux` with **no CORS middleware**. Either (a) set `DATABASE_URL` (even to a throwaway Postgres), or (b) add a Vite dev proxy, or (c) patch the backend to apply CORS in all branches. See [TESTING.md §4](./TESTING.md#4-known-limitations--recommended-improvements) item 1.
+
+---
+
+## 4. End-to-End Data Flow
+
+### 4a. Register flow (both modes)
+1. User opens `http://localhost:3000` → `App` redirects `/` → `/register`.
+2. `pages/Register.jsx` renders the form (First Name, Last Name, Email, Password, Age, Gender).
+3. User submits → `handleSubmit` builds:
    ```json
-   { "name": "Alice", "age": 30, "gender": "female" }
+   {
+     "firstName": "John", "lastName": "Doe", "name": "John Doe",
+     "email": "john@example.com", "password": "••••",
+     "age": 25, "gender": "male"
+   }
    ```
-6. `fetch` POSTs to `VITE_API_URL` (default `http://localhost:8080/api/user`) with `Content-Type: application/json`.
-7. Browser sends an **OPTIONS preflight** (cross-origin + JSON content type). Backend answers `204` with CORS headers.
-8. Browser sends the actual **POST**. Backend:
-   - Verifies method POST ✓
-   - Decodes JSON into `User` ✓
-   - Logs `Received user: {Name:Alice Age:30 Gender:female}`
-   - Responds `200 {"status":"ok","name":"Alice"}`
-9. Frontend sets status to **"Sent successfully!"**.
-10. The `<pre class="preview">` continues showing the live form JSON.
+4. `fetch(POST, API_ENDPOINT)` where `API_ENDPOINT = VITE_API_URL || "http://localhost:8080/register"`.
+5. **DB mode:** browser sends OPTIONS preflight → CORS middleware → 204; then POST → `userHandler` inserts row → `200 {status:"ok",id,name}`. Register clears the form on success.
+6. **No-DB mode:** browser sends POST (no preflight allowed → browser blocks unless same-origin) → `simpleHandler` returns `{status:"ok",name:<req.Name>}`.
+
+### 4b. Login flow (client-only, no API)
+1. Navigate to `/login` (via link on Register page).
+2. Fill email + password → submit.
+3. `handleSubmit` runs `await new Promise(r => setTimeout(r, 1000))` and then sets status **"Login successful!"**.
+4. No backend call is made. No session is stored. This is a **UI placeholder**.
 
 ---
 
-## 4. Repository Structure (Annotated)
+## 5. Repository Structure (Annotated)
 
 ```
 .
 ├── backend/                     # Go API server
-│   ├── .gitignore               # Ignores node_modules, dist, .env, package.json
-│   ├── go.mod                   # Go module: github.com/example/user-api, go 1.22
-│   └── main.go                  # Entire backend: types, handler, CORS, server
+│   ├── .gitignore               # Ignores .env, dist, node_modules, package.json
+│   ├── testbin                  # ⚠️ committed build artifact (should be gitignored)
+│   ├── go.mod                   # module github.com/example/user-api; go 1.25.0; pgx/v5
+│   ├── go.sum                   # Checksums for pgx and transitive deps
+│   └── main.go                  # Dual-mode server: simpleHandler OR userHandler(db)
 │
 ├── src/                         # React frontend source
 │   ├── assets/                  # Images & SVGs bundled by Vite
-│   │   ├── hero.png             # Hero image (binary asset)
-│   │   ├── react.svg            # React logo
-│   │   └── vite.svg             # Vite logo
-│   ├── main.jsx                 # React root mount (StrictMode)
-│   ├── App.jsx                  # The only application component (form)
-│   ├── App.css                  # Component-level styles
-│   └── index.css                # Global styles / CSS variables / dark mode
+│   │   ├── hero.png             # Unused hero image
+│   │   ├── react.svg            # React logo (unused)
+│   │   └── vite.svg             # Vite logo (unused)
+│   ├── pages/                   # Routed pages
+│   │   ├── Login.jsx            # UI-only login (simulated success)
+│   │   └── Register.jsx         # Registration form → POST /register
+│   ├── main.jsx                 # Entry: StrictMode + BrowserRouter + <App/>
+│   ├── mainApp.jsx              # ⚠️ alternate entry rendering <Register/> (unused)
+│   ├── App.jsx                  # Router: / → /register, /register, /login
+│   ├── App.css                  # Auth split-panel theme (Inovix Labs)
+│   └── index.css                # Global vars / dark mode (legacy theme)
 │
-├── public/                      # Served as-is at site root, not processed by Vite
-│   ├── icons.svg                # SVG sprite: social/UI icon symbols
+├── public/                      # Copied verbatim into dist/
+│   ├── icons.svg                # SVG sprite (unused by app)
 │   └── favicon.svg              # Browser tab icon
 │
 ├── docs/                        # 📚 You are here
-│   ├── README.md                # This index
-│   ├── ARCHITECTURE.md          # Overview, diagram, data flow, repo map
+│   ├── README.md
+│   ├── ARCHITECTURE.md
 │   ├── FRONTEND.md
 │   ├── BACKEND-API.md
 │   ├── RUNBOOK.md
 │   ├── TESTING.md
 │   └── NON-TECHNICAL.md
 │
-├── index.html                   # HTML entry point for Vite
-├── vite.config.js               # Vite config (React plugin, port 3000)
-├── .oxlintrc.json               # Linter config (React + Oxc rules)
+├── index.html                   # Vite HTML entry
+├── vite.config.js               # React plugin; dev port 3000; no proxy
+├── .oxlintrc.json               # Oxlint rules (React + Oxc)
 ├── .gitignore                   # Ignores node_modules, dist, logs, .env, editors
-├── package.json                 # NPM manifest, scripts, dependencies
+├── package.json                 # Adds react-router-dom@^7.18.5
 └── README.md                    # Short project README (links to docs/)
 ```
 
-**Note:** `backend/.gitignore` ignores `package.json`, which is unusual for a Go backend but harmless — there is no `package.json` in `backend/` anyway.
+---
+
+## 6. Cross-Cutting Gaps (Read First)
+
+These affect everyone, so they are surfaced at the top level:
+
+1. **CORS missing in no-DB fallback** — browser calls from `:3000` to `:8080` will be blocked in that mode. Mitigations: set a `DATABASE_URL`, add a Vite proxy, or patch `main.go` to always wrap in CORS.
+2. **Frontend/backend field mismatch** — frontend sends `email` & `password`; backend ignores both. Don't assume they're persisted.
+3. **`age` may be `''`** when the form is empty (frontend), causing `400 bad json` from the backend.
+4. **Two UIs coexisting** — `index.css` (legacy) vs `App.css` (current theme). Both target `body`, `#root`; visual conflicts possible.
+5. **`src/mainApp.jsx` and `backend/testbin`** are stray/leftover files — should be removed or gitignored.
 
 ---
 
-> **File ownership & change frequency:** see [FRONTEND.md Appendix A](./FRONTEND.md#appendix-a--file-by-file-reference-matrix) and [BACKEND-API.md Appendix A](./BACKEND-API.md#appendix-a--file-by-file-reference-matrix) for per-file owner tables.
+> **File ownership & change frequency:** see [FRONTEND.md Appendix A](./FRONTEND.md#appendix-a--file-by-file-reference-matrix) and [BACKEND-API.md Appendix A](./BACKEND-API.md#appendix-a--file-by-file-reference-matrix).

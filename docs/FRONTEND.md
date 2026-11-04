@@ -4,8 +4,8 @@
 
 ## Table of contents
 1. [Tech Stack & Dependencies](#1-tech-stack--dependencies)
-2. [Entry Point & Bootstrapping](#2-entry-point--bootstrapping)
-3. [Component: `App.jsx` (The User Form)](#3-component-appjsx-the-user-form)
+2. [Entry Point & Routing](#2-entry-point--routing)
+3. [Pages](#3-pages)
 4. [Styling System](#4-styling-system)
 5. [Assets, Icons & Public Files](#5-assets-icons--public-files)
 6. [Build Tooling (Vite)](#6-build-tooling-vite)
@@ -24,6 +24,7 @@ From `package.json`:
 |------|---------|---------|---------|
 | Runtime | `react` | ^19.3.1 | UI library |
 | Runtime | `react-dom` | ^19.3.1 | DOM renderer |
+| Runtime | `react-router-dom` | **^7.18.5** | Client-side routing |
 | Dev | `@types/react` | ^19.3.0 | TypeScript type hints (editor) |
 | Dev | `@types/react-dom` | ^19.3.0 | TypeScript type hints (editor) |
 | Dev | `@vitejs/plugin-react` | ^6.1.2 | Vite plugin using Oxc transform |
@@ -31,210 +32,276 @@ From `package.json`:
 | Dev | `vite` | ^8.3.5 | Build tool & dev server |
 
 - **Module system:** ESM (`"type": "module"`).
-- **Package manager:** npm (scripts use `npm`; lockfile not included).
-- **React 19** is used — note `react-dom/client`'s `createRoot` API.
-- The **React Compiler is intentionally NOT enabled** (per README), to preserve dev/build performance.
+- **React 19**, **React Router 7**.
+- No lockfile in repo — `npm install` resolves latest-compatible.
 
-## 2. Entry Point & Bootstrapping
+## 2. Entry Point & Routing
 
-**`index.html`** (served by Vite)
-- Sets `<html lang="en">`.
-- Loads `/favicon.svg` as icon.
-- Sets viewport for responsive rendering.
-- Title: `react-gender-app`.
-- Contains `<div id="root">` — the mount point.
-- Loads `/src/main.jsx` as a **module** script (Vite handles bundling).
+**`index.html`**
+- Loads `/favicon.svg`; title `react-gender-app`; mounts `<div id="root">`; loads `/src/main.jsx`.
 
-**`src/main.jsx`**
+**`src/main.jsx`** *(updated)*
 ```jsx
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
+import { BrowserRouter } from 'react-router-dom'
 import './index.css'
 import App from './App.jsx'
 
 createRoot(document.getElementById('root')).render(
   <StrictMode>
-    <App />
+    <BrowserRouter>
+      <App />
+    </BrowserRouter>
   </StrictMode>,
 )
 ```
-- Imports **global CSS** (`index.css`) first.
-- Renders `<App />` inside `<StrictMode>` (enables React dev-time checks: double-render, effect sanity checks).
-- Uses React 19's `createRoot` from `react-dom/client`.
+- Wraps `<App/>` in `<BrowserRouter>` — enables client routing.
+- Uses `history` API; **requires** the static host to fall back to `index.html` for unknown paths in production (see [RUNBOOK.md §2](./RUNBOOK.md#2-deployment--devops-notes)).
 
-## 3. Component: `App.jsx` (The User Form)
+**`src/App.jsx`** *(rewritten — now a router)*
+```jsx
+import { Routes, Route, Navigate } from "react-router-dom";
+import RegisterPage from "./pages/Register.jsx";
+import LoginPage from "./pages/Login.jsx";
 
-`App.jsx` is the **entire application UI**. It is a single function component.
+function App() {
+  return (
+    <Routes>
+      <Route path="/" element={<Navigate to="/register" replace />} />
+      <Route path="/register" element={<RegisterPage />} />
+      <Route path="/login" element={<LoginPage />} />
+    </Routes>
+  );
+}
+export default App;
+```
+- `/` → redirects to `/register` (replace history).
+- `/register` → `<RegisterPage/>`.
+- `/login` → `<LoginPage/>`.
+- **No 404 route** — unknown paths render nothing (blank `<Routes/>`). Consider a catch-all later.
 
-### State (via `useState`)
+**`src/mainApp.jsx`** *(unused)*
+```jsx
+import { Register } from './pages/Register'
+import './App.css'
+function App() { return <Register /> }
+export default App
+```
+- Leftover alternate entry. **Not referenced** by `index.html` or `main.jsx`. Safe to delete. Note it imports a **named** `Register`, but `pages/Register.jsx` has only a **default** export — this file would fail if ever loaded.
 
-| State | Initial | Type | Purpose |
-|-------|---------|------|---------|
-| `name` | `''` | string | Controlled input for name |
-| `age` | `''` | string | Controlled input for age (kept as string in input) |
-| `gender` | `''` | string | Controlled input for gender |
-| `status` | `''` | string | User-facing status message |
+## 3. Pages
 
-### API Endpoint Resolution
+### 3.1 `src/pages/Register.jsx`
+
+**Purpose:** primary page. Collects user details and POSTs to the backend.
+
+**State (`useState`)**
+
+| State | Init | Type |
+|-------|------|------|
+| `firstName` | `""` | string |
+| `lastName` | `""` | string |
+| `email` | `""` | string |
+| `password` | `""` | string |
+| `age` | `""` | string |
+| `gender` | `""` | string (`male`/`female`/`other`) |
+| `status` | `""` | string |
+
+**API endpoint**
 ```js
 const API_ENDPOINT =
-  import.meta.env.VITE_API_URL || 'http://localhost:8080/api/user'
+  import.meta.env.VITE_API_URL || "http://localhost:8080/register";
 ```
-- Uses Vite's `import.meta.env` mechanism.
-- Falls back to localhost:8080 for local dev.
-- `VITE_API_URL` must be prefixed with `VITE_` to be exposed to client code.
+- Default now points to **`/register`** (not `/api/user`).
 
-### Submit Handler (`handleSubmit`)
-1. **Prevents default form submission** (no page reload).
-2. Builds payload:
-   ```js
-   { name, age: age ? Number(age) : '', gender }
-   ```
-   - `age` is converted from string to **number**; if empty, it becomes `''` (which the backend expects to be an int — see limitations).
-3. Sets status to `'Sending...'`.
-4. `fetch(API_ENDPOINT, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) })`.
-5. If response is **not** `ok` (non-2xx), throws `Error("HTTP <status>")`.
-6. On success → `'Sent successfully!'`.
-7. On any error → logs to console and sets `'Error: <message>'`.
-
-### Rendered UI Structure
+**Payload sent**
+```js
+{
+  firstName, lastName,
+  name: `${firstName} ${lastName}`.trim(),
+  email, password,
+  age: age ? Number(age) : "",
+  gender,
+}
 ```
-<div class="container">
-  <h1>User Form</h1>
-  <form onSubmit={handleSubmit}>
-    <label> Name   <input ... required /> </label>
-    <label> Age    <input type="number" ... required /> </label>
-    <label> Gender <input ... required /> </label>
-    <button type="submit">Submit to Backend</button>
-  </form>
-  {status && <p class="status">{status}</p>}
-  <pre class="preview">{JSON.stringify({ name, age, gender }, null, 2)}</pre>
+- `name` is derived by joining first + last.
+- `age` becomes a **number** if non-empty, else `""` (⚠️ see limitation — backend expects int).
+- `email` and `password` are **sent but ignored** by the backend (see [BACKEND-API.md §4](./BACKEND-API.md#4-data-models)).
+
+**Submit handler**
+1. `preventDefault()`, set status `"Sending..."`.
+2. `fetch` POST JSON.
+3. On `!res.ok` → throw `HTTP <status>`.
+4. On success → `await res.json()` (ignored), set status `"Registration successful!"`, **reset all six fields**.
+5. On error → `console.error`, status `Error: <msg>`.
+
+**UI structure**
+
+```
+<div.auth-container>
+  <div.auth-wrapper>
+    <div.auth-branding>
+      🚀 Inovix Labs
+      tagline + <ul.brand-features> (3 checkmarks)
+    </div>
+    <div.auth-form-section>
+      <header: "Create Account" / "Start your journey with us today">
+      <form>
+        <field First Name (required)>
+        <field Last Name  (required)>
+        <field Email (type=email, required)>
+        <field Password (type=password, required)>
+        <field Age (type=text, pattern="[0-9]*", required)>
+        <field Gender (select: Male/Female/Other, required)>
+        <button.auth-btn>Create Account</button>
+      </form>
+      {status && <p.status>{status}</p>}
+      <p.auth-footer>Already have an account? <Link to="/login">Sign In</Link></p>
+    </div>
+  </div>
 </div>
 ```
 
-- **All three fields are `required`** — browser will block submit if empty.
-- `age` input is `type="number"`.
-- The `preview` block **always shows** the current form values as pretty-printed JSON (2-space indent) — useful for demos/debugging.
+**Notes for QA**
+- Age is `type="text"` with `pattern="[0-9]*"` — browser blocks non-digit input on submit (HTML5 pattern check).
+- Gender uses a `<select>` with an empty placeholder option (`required` → blocked until chosen).
+- On success the form clears; the status message remains until next submit.
+- Backend response body is **not displayed** (only used to satisfy `await res.json()`).
 
-### Behavior Notes for Testers
-- Submitting with all fields fills → happy path.
-- Submitting invalid age (non-numeric) → browser blocks (type=number).
-- Backend down → status shows `Error: Failed to fetch`.
-- Backend returns non-2xx → status shows `Error: HTTP <code>`.
-- The UI does **not** clear after submit; it does **not** display the server's response body.
+### 3.2 `src/pages/Login.jsx`
+
+**Purpose:** UI-only login placeholder. **Does not call the backend.**
+
+**State:** `email`, `password`, `status`.
+
+**Submit handler**
+1. `preventDefault()`, status `"Logging in..."`.
+2. `await new Promise(r => setTimeout(r, 1000))` — simulated latency.
+3. status `"Login successful!"`.
+4. No redirect, no token, no storage, no API call.
+
+**UI structure**
+
+```
+<div.auth-container>
+  <div.auth-wrapper>
+    <div.auth-branding>  (same branding as Register)
+    <div.auth-form-section>
+      <header: "Welcome Back" / "Sign in to your account to continue">
+      <form>
+        <field Email (type=email, required)>
+        <field Password (type=password, required)>
+        <button.auth-btn>Sign In</button>
+      </form>
+      {status && <p.status>{status}</p>}
+      <p.auth-footer>Don't have an account? <Link to="/register">Create Account</Link></p>
+    </div>
+  </div>
+</div>
+```
+
+**Notes for QA**
+- Every click submits and "succeeds" — this is a demo, not auth.
+- No navigation on success (stays on `/login`).
+- Cross-link to `/register` works via React Router.
 
 ## 4. Styling System
 
-There are **two CSS files** with **overlapping global selectors** — be aware of cascade order.
+There are **two CSS files** with different themes now coexisting.
 
-### `src/index.css` (Global)
-Loaded in `main.jsx`. Defines:
-- CSS custom properties (`--text`, `--bg`, `--accent`, `--border`, `--shadow`, etc.) on `:root`.
-- **Light/dark mode** via `@media (prefers-color-scheme: dark)` — automatically switches palette.
-- Font stack: system-ui / Segoe UI / Roboto; monospace stack for code.
-- Base font-size `18px` (16px under 1024px width).
-- `#root` is set to a **1126px max-width centered column** with side borders (`border-inline`), `min-height: 100svh`, flex column, centered text.
-- Large `h1` (56px) and `h2` (24px) styles with responsive reductions.
-- `code` and `.counter` styling.
+### `src/index.css` (global, legacy)
+Loaded first in `main.jsx`. Defines `:root` CSS variables (`--text`, `--bg`, `--accent`, `--shadow` …), a light/dark palette via `prefers-color-scheme`, system font stack, and a `#root` layout (1126px max-width column, side borders, flex column, centered text, `min-height: 100svh`). No current page uses those variables directly, but they still style `body`, `#root`, `h1`, `h2`, `code`.
 
-### `src/App.css` (Component)
-Imported in `App.jsx`. Defines:
-- Universal reset (`* { box-sizing:border-box; margin:0; padding:0 }`).
-- `body` font/background — **note:** this conflicts with `index.css` `:root` background; `App.css`'s `body` rule appears later in bundle, may override.
-- `#root` centering with `min-height:100vh`, flex center, 2rem padding — **overrides** the `#root` layout from `index.css` (since App.css is imported after index.css in module graph order).
-- `.container` — white card, 12px radius, shadow, max-width 420px.
-- `form` — vertical flex with 1rem gap.
-- `label` — column flex, 0.9rem, 500 weight.
-- `input` — padding, 1px `#ddd` border, 8px radius, focus outline `#6366f1`.
-- `button` — indigo (`#6366f1`), white text, 600 weight; hover `#4f46e5`.
-- `.status` — centered, bold-ish text.
-- `.preview` — light grey block, rounded, monospace-ish small text, horizontal scroll.
+### `src/App.css` (current, "Inovix Labs" theme)
+Imported by `pages/Register.jsx` and `pages/Login.jsx` (and by the unused `mainApp.jsx`). Provides:
 
-**Cascade caution:** Both files style `body` and `#root`. Effective look depends on import order (index.css → App.css via module graph). Testers should validate appearance in both light and dark OS modes. (Known cleanup item — see [TESTING.md §4](./TESTING.md#4-known-limitations--recommended-improvements).)
+| Selector | Meaning |
+|----------|---------|
+| `*` reset | box-sizing, margin, padding zero |
+| `body` | dark slate `#0f172a`, system font stack |
+| `.auth-container` | full-screen flex center, dark gradient background |
+| `.auth-wrapper` | flex split, 1000px max-width, white card, 24px radius, deep shadow |
+| `.auth-branding` | purple gradient (`#667eea → #764ba2`) panel with SVG dot pattern overlay (`::before`) |
+| `.brand-logo`, `.brand-icon` | 🚀 mark + "Inovix Labs" |
+| `.brand-tagline`, `.brand-features` | marketing copy |
+| `.auth-form-section` | right panel, max-width 500px |
+| `.auth-header`, `.auth-title`, `.auth-subtitle` | headings |
+| `.field` | bottom-margin wrapper |
+| `.field label` | bold slate label |
+| `.field input`, `.field select` | 2px light border, 12px radius, `#f8fafc` bg; on `:focus` → purple border + glow |
+| `.auth-btn` | gradient button, `translateY(-2px)` hover lift |
+| `.status` | sky-blue informational box |
+| `.auth-footer`, `.auth-footer a` | muted gray link row |
+| `@media (max-width: 768px)` | `.auth-wrapper` becomes a single column (`flex-direction: column`, max-width 440px); padding shrinks |
+
+**Cascade caution:** `index.css` sets `#root` to a bordered 1126px column with side borders and centered text; `App.css`'s `.auth-container` draws its own full-screen gradient. Because `App.css` is imported *after* `index.css` (via module graph), and both target `body`, the **dark** body background from App.css wins. Test both light and dark OS modes.
 
 ## 5. Assets, Icons & Public Files
 
-- **`src/assets/hero.png`** — binary image; available as URL reference from external source (GitHub raw link in file listing). Not currently imported by `App.jsx`.
-- **`src/assets/react.svg`** — React logo SVG (Iconify style, `#00D8FF`). Not imported by current code.
-- **`src/assets/vite.svg`** — Vite logo SVG with blurred gradient background. Not imported by current code.
-- **`public/icons.svg`** — SVG **sprite** defining symbols: `bluesky-icon`, `discord-icon`, `documentation-icon`, `github-icon`, `social-icon`, `x-icon`. Intended to be used via `<svg><use href="/icons.svg#github-icon"/></svg>`. Not currently used by `App.jsx` — likely leftovers from a template.
-- **`public/favicon.svg`** — Purple Vite-style lightning bolt favicon, loaded by `index.html`.
+- **`src/assets/hero.png`** — unused binary (external URL in file listing).
+- **`src/assets/react.svg`, `src/assets/vite.svg`** — unused logos.
+- **`public/icons.svg`** — SVG sprite: `bluesky-icon`, `discord-icon`, `documentation-icon`, `github-icon`, `social-icon`, `x-icon`. Not referenced by current pages.
+- **`public/favicon.svg`** — used by `index.html`.
 
-**Note for DevOps:** `public/` contents are copied verbatim to the build output root (`dist/`). `src/assets/` are hashed and processed by Vite at build time.
+**DevOps:** `public/*` are copied verbatim into `dist/`; `src/assets/*` are hashed and processed by Vite.
 
 ## 6. Build Tooling (Vite)
 
 **`vite.config.js`**
 ```js
-import react from "@vitejs/plugin-react";
-import { defineConfig } from "vite";
-
 export default defineConfig({
   plugins: [react()],
   server: { port: 3000 },
 });
 ```
-- **React plugin** — uses Oxc-based transform (per README), enables Fast Refresh (HMR).
-- **Dev server port hard-set to `3000`** (note: `strictPort` is NOT set, so Vite may pick 3001 if 3000 is busy — testers should confirm the printed URL).
-- No `build.outDir` override → default `dist/`.
-- No proxy configured — the frontend calls the backend directly cross-origin (hence backend CORS).
+- Dev server on **`:3000`**, no `strictPort` (may auto-increment to 3001 if busy).
+- **No proxy** → frontend calls backend cross-origin (`:8080`); CORS must be configured on the backend. In no-DB backend mode CORS is **not** applied (see [ARCHITECTURE.md §3](./ARCHITECTURE.md#3-backend-modes-no-db-vs-postgres)).
+- Build default `dist/`. SPA needs history fallback (`try_files $uri /index.html` for Nginx).
 
 ## 7. Linting (Oxlint)
 
-**`.oxlintrc.json`**
-```json
-{
-  "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["react", "oxc"],
-  "rules": {
-    "react/rules-of-hooks": "error",
-    "react/only-export-components": ["warn", { "allowConstantExport": true }]
-  }
-}
-```
-- **`react/rules-of-hooks` (error)** — enforces hook call rules.
-- **`react/only-export-components` (warn)** — warns if a module exports non-components alongside components (Fast Refresh friendliness), allowing constant exports.
-- Run with `npm run lint`.
+Same `.oxlintrc.json` as before — `react/rules-of-hooks: error`, `react/only-export-components: warn`. Run `npm run lint`.
 
 ## 8. Environment Variables (Frontend)
 
 | Variable | Required | Default | Consumed in | Notes |
 |----------|----------|---------|-------------|-------|
-| `VITE_API_URL` | No | `http://localhost:8080/api/user` | `App.jsx` | Must start with `VITE_` to reach the browser. Set in `.env` (gitignored). |
+| `VITE_API_URL` | No | `http://localhost:8080/register` | `pages/Register.jsx` | Must start with `VITE_`. **Baked at build time.** |
 
-- **Baked at build time** by Vite — changing it requires a rebuild/restart of dev server. It is **not** a runtime variable.
-- Example `.env`:
-  ```
-  VITE_API_URL=https://api.example.com/api/user
-  ```
-- Full env-var matrix (frontend + backend): see [BACKEND-API.md §7](./BACKEND-API.md#7-environment-variables).
+- Set in a root `.env` (gitignored).
+- Login page doesn't use any API URL.
+- Full matrix: [BACKEND-API.md §7](./BACKEND-API.md#7-environment-variables).
 
 ## 9. Frontend Scripts Reference
 
-| Command | What it does | When to use |
-|---------|--------------|-------------|
-| `npm install` | Installs dependencies | First setup |
-| `npm run dev` | Starts Vite dev server on :3000 with HMR | Local development |
+| Command | What it does | When |
+|---------|--------------|------|
+| `npm install` | Installs deps (incl. React Router) | First setup / after dep change |
+| `npm run dev` | Vite dev server on :3000 with HMR | Development |
 | `npm run build` | Production build → `dist/` | Before deploy |
-| `npm run preview` | Serves the built `dist/` locally | Verify prod build |
+| `npm run preview` | Serve built `dist/` locally | Verify prod build |
 | `npm run lint` | Runs Oxlint | CI / pre-commit |
 
 ---
 
 ## Appendix A — File-by-File Reference Matrix
 
-| File | Role | Primary Owner | Change Frequency |
-|------|------|---------------|------------------|
-| `index.html` | HTML shell, mounts React | Frontend Dev | Rare |
-| `src/main.jsx` | React bootstrap + StrictMode | Frontend Dev | Rare |
-| `src/App.jsx` | Entire form UI + submit logic | Frontend Dev | Frequent |
-| `src/App.css` | Card/form/button styling | Frontend Dev / Designer | Occasional |
-| `src/index.css` | Global theme, CSS vars, dark mode | Frontend Dev / Designer | Occasional |
-| `src/assets/hero.png` | Unused hero image | Designer | Rare |
-| `src/assets/react.svg` | React logo (unused) | — | Static |
-| `src/assets/vite.svg` | Vite logo (unused) | — | Static |
-| `public/icons.svg` | SVG sprite of UI/social icons (unused by app) | Designer | Rare |
+| File | Role | Owner | Frequency |
+|------|------|-------|-----------|
+| `index.html` | HTML shell | Frontend | Rare |
+| `src/main.jsx` | Entry: StrictMode + BrowserRouter + `<App/>` | Frontend | Rare |
+| `src/App.jsx` | Route table (`/`, `/register`, `/login`) | Frontend | Occasional |
+| `src/mainApp.jsx` | **Unused** alternate entry rendering `<Register/>` | — | Should be deleted |
+| `src/pages/Register.jsx` | Registration form + POST to backend | Frontend | Frequent |
+| `src/pages/Login.jsx` | UI-only login (simulated success) | Frontend | Occasional |
+| `src/App.css` | Auth split-panel theme (Inovix Labs) | Frontend / Designer | Occasional |
+| `src/index.css` | Global vars / legacy theme | Frontend / Designer | Occasional |
+| `src/assets/hero.png` | Unused image | Designer | Rare |
+| `src/assets/react.svg` | Unused logo | — | Static |
+| `src/assets/vite.svg` | Unused logo | — | Static |
+| `public/icons.svg` | SVG sprite (unused by pages) | Designer | Rare |
 | `public/favicon.svg` | Browser tab icon | Designer | Rare |
-| `vite.config.js` | Dev server port + React plugin | Frontend Dev | Rare |
-| `.oxlintrc.json` | Lint rules | Frontend Dev | Rare |
-| `package.json` | Deps + scripts | Frontend Dev | Occasional |
+| `vite.config.js` | React plugin; port 3000 | Frontend | Rare |
+| `.oxlintrc.json` | Lint rules | Frontend | Rare |
+| `package.json` | Deps + scripts (incl. `react-router-dom`) | Frontend | Occasional |

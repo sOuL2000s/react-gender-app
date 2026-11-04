@@ -4,110 +4,82 @@
 
 ## Table of contents
 1. [Tech Stack & Dependencies](#1-tech-stack--dependencies)
-2. [Server Entry & Bootstrap (`main`)](#2-server-entry--bootstrap-main)
+2. [Server Entry & Dual-Mode Bootstrap (`main`)](#2-server-entry--dual-mode-bootstrap-main)
 3. [API Contract](#3-api-contract)
-4. [Data Model (`User` Struct)](#4-data-model-user-struct)
-5. [Handler Logic (`userHandler`)](#5-handler-logic-userhandler)
+4. [Data Models](#4-data-models)
+5. [Handler Logic](#5-handler-logic)
 6. [CORS Middleware](#6-cors-middleware)
 7. [Environment Variables](#7-environment-variables)
-8. [Appendix A — File-by-File Reference Matrix](#appendix-a--file-by-file-reference-matrix)
-9. [Appendix B — API Reference Card](#appendix-b--api-reference-card)
+8. [Database Schema](#8-database-schema)
+9. [Appendix A — File-by-File Reference Matrix](#appendix-a--file-by-file-reference-matrix)
+10. [Appendix B — API Reference Card](#appendix-b--api-reference-card)
 
 ---
 
 ## 1. Tech Stack & Dependencies
 
-- **Language:** Go **1.22** (per `go.mod`).
+- **Language:** Go **1.25.0** (per `go.mod`).
 - **Module path:** `github.com/example/user-api`.
-- **Standard library only:** `encoding/json`, `log`, `net/http`, `os`. **No third-party deps.**
-- Single file: `backend/main.go` (~60 lines).
+- **Third-party deps:**
+  - `github.com/jackc/pgx/v5 v5.12.0` — Postgres driver (connection + queries).
+  - `github.com/jackc/pgpassfile v1.0.0` — indirect (pgx dep).
+  - `github.com/jackc/pgservicefile v0.0.0-2024…` — indirect (pgx dep).
+  - `golang.org/x/text v0.41.0` — indirect.
+- **Stdlib used:** `context`, `encoding/json`, `log`, `net/http`, `os`.
+- Single file: `backend/main.go` (~150 lines).
+- **`backend/testbin`** — a committed binary artifact. Should be gitignored (see limitations).
 
-## 2. Server Entry & Bootstrap (`main`)
+## 2. Server Entry & Dual-Mode Bootstrap (`main`)
 
-1. Creates `http.NewServeMux()` and registers `"/api/user"` → `userHandler`.
-2. Reads `FRONTEND_URL` (CORS origin) — default `*` (see §6).
-3. Wraps mux in CORS handler (see §6).
-4. Reads `PORT` env — default `"8080"`.
-5. Logs `Listening on :<port>`.
-6. `log.Fatal(http.ListenAndServe(":"+port, handler))` — blocks; fatal on error.
+`main()` branches on `DATABASE_URL`:
 
-**Notes:**
-- Uses Go's default server — **no read/write/idle timeouts configured**. Recommended for production: wrap in `&http.Server{ ReadHeaderTimeout, ReadTimeout, WriteTimeout, IdleTimeout }`.
-- No graceful shutdown (SIGTERM handling).
-- No health-check endpoint (e.g. `/healthz`).
-
-## 3. API Contract
-
-### `POST /api/user`
-
-**Request**
-- Method: `POST` (only method allowed; others → `405 Method Not Allowed`).
-- Headers: `Content-Type: application/json`.
-- Body:
-  ```json
-  { "name": "Alice", "age": 30, "gender": "female" }
-  ```
-  | Field | JSON key | Go type | Required in practice |
-  |-------|----------|---------|----------------------|
-  | Name | `name` | string | Yes (semantically) |
-  | Age | `age` | int | Yes (semantically) |
-  | Gender | `gender` | string | Yes (semantically) |
-
-**Success Response — `200 OK`**
-```json
-{ "status": "ok", "name": "Alice" }
 ```
-- Header: `Content-Type: application/json`.
+DATABASE_URL set?
+├─ NO  → simpleHandler on /api/user + /register; no CORS; no /health; listen on PORT (default 8080).
+└─ YES → pgx.Connect(context.Background(), dsn)
+          ├─ FAIL → log; simpleHandler on /api/user + /register; no CORS; no /health; listen.
+          └─ OK   → defer db.Close(); ensureTable(db) (fatal if fails);
+                    userHandler(db) on /api/user + /register;
+                    GET /health → healthHandler;
+                    wrap in CORS middleware;
+                    listen on PORT (default 8080).
+```
 
-**Error Responses**
-
-| Status | Body (plain text via `http.Error`) | Trigger |
-|--------|-----------------------------------|---------|
-| `405 Method Not Allowed` | `method not allowed` | Any method other than POST (e.g. GET) |
-| `400 Bad Request` | `bad json` | Body is not valid JSON or types mismatch (e.g. `age` as `""` or string) |
-
-> **⚠️ Important cross-cutting bug risk:** The frontend sends `age: ""` when the age input is empty. The Go struct has `Age int`, so `""` cannot unmarshal into `int` → backend returns **400 bad json**. In practice the form's `required` + `type=number` prevents empty submit in-browser, but API consumers and programmatic tests must send a **number** for `age`.
-
-**OPTIONS preflight** → `204 No Content` with CORS headers (see §6).
-
-## 4. Data Model (`User` Struct)
+### Branch A — No DB (default)
 
 ```go
-type User struct {
-    Name   string `json:"name"`
-    Age    int    `json:"age"`
-    Gender string `json:"gender"`
-}
+log.Println("DATABASE_URL not set, using simple handler (no DB)")
+mux := http.NewServeMux()
+mux.HandleFunc("/api/user", simpleHandler)
+mux.HandleFunc("/register", simpleHandler)
+port := os.Getenv("PORT"); if port == "" { port = "8080" }
+log.Printf("Listening on :%s (no DB)", port)
+log.Fatal(http.ListenAndServe(":"+port, mux))
 ```
-- JSON tags map lower-case keys to Go fields.
-- Strict typing: `Age` is `int`. Unknown JSON fields are ignored (Go default behavior, no `DisallowUnknownFields`).
-- No validation tags (no `validator` lib), no length checks, no age range checks.
 
-## 5. Handler Logic (`userHandler`)
+- Uses a **bare `ServeMux`** with **no CORS wrapper**.
+- **No `/health`** endpoint.
+- **Cross-origin browser calls from `:3000` will fail** with a CORS error in the browser console (the request still reaches the server, but the browser blocks reading the response). Mitigation: set `DATABASE_URL`, add a Vite proxy, or patch the code.
 
-`func userHandler(w http.ResponseWriter, r *http.Request)`
-1. **Method check:** if `r.Method != POST` → `405 method not allowed`.
-2. **Decode:** `json.NewDecoder(r.Body).Decode(&u)`; on error → `400 bad json`.
-3. **Log:** `log.Printf("Received user: %+v\n", u)` — prints to stdout/logs. This is the only "persistence".
-4. **Respond:** sets `Content-Type: application/json`, writes `200`, encodes `{"status":"ok","name":u.Name}`.
+### Branch B — DB connect fails
 
-**Notes:**
-- No request body size limit (`http.MaxBytesReader` not used) — potential DoS vector in production.
-- No timeout on body read.
-- No context cancellation checks.
-- Errors from `json.NewEncoder(...).Encode(...)` are ignored.
+Same handlers and same lack of CORS as Branch A, but logged as `DB connection failed, using simple handler on :<port>`. Practically equivalent to Branch A.
 
-## 6. CORS Middleware
-
-Wrapping `http.HandlerFunc` around the mux:
+### Branch C — DB connect succeeds (real mode)
 
 ```go
-origin := os.Getenv("FRONTEND_URL")
-if origin == "" { origin = "*" } // local dev
+defer db.Close(context.Background())
+if err := ensureTable(db); err != nil { log.Fatalf("ensure table: %v", err) }
 
+mux := http.NewServeMux()
+mux.HandleFunc("/api/user", userHandler(db))
+mux.HandleFunc("/register", userHandler(db))
+mux.HandleFunc("/health", healthHandler)
+
+origin := os.Getenv("FRONTEND_URL"); if origin == "" { origin = "*" }
 handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
     w.Header().Set("Access-Control-Allow-Origin", origin)
-    w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
+    w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS, GET")
     w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
     if r.Method == http.MethodOptions {
         w.WriteHeader(http.StatusNoContent)
@@ -115,92 +87,265 @@ handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
     }
     mux.ServeHTTP(w, r)
 })
+log.Fatal(http.ListenAndServe(":"+port, handler))
 ```
 
-- **`Access-Control-Allow-Origin`**: reflects `FRONTEND_URL` env, else `*`.
-- **Allowed methods:** `POST, OPTIONS` only.
-- **Allowed headers:** `Content-Type` only.
-- **Preflight:** `OPTIONS` short-circuits with `204 No Content`.
-- **Not set:** `Access-Control-Allow-Credentials`, `Access-Control-Max-Age`, `Vary: Origin`. With credentials not used this is fine for the demo, but for production:
-  - Setting `*` while also sending cookies would fail — keep `*` only for unauthenticated APIs.
-  - Add `Vary: Origin` if you later make origin dynamic per request.
+- CORS applied to all routes.
+- `/health` available.
+- Both `/api/user` and `/register` route to the **same** `userHandler(db)`.
+
+## 3. API Contract
+
+### Common endpoint: `POST /register` and `POST /api/user` (aliases)
+
+Both paths hit the same handler in their respective mode.
+
+**Request**
+- Method: `POST` (only; others → `405 method not allowed`).
+- Headers: `Content-Type: application/json`.
+- Body (what the frontend actually sends):
+  ```json
+  {
+    "firstName": "John",
+    "lastName": "Doe",
+    "name": "John Doe",
+    "email": "john@example.com",
+    "password": "••••",
+    "age": 25,
+    "gender": "male"
+  }
+  ```
+
+**Fields read by backend (`UserRequest`)**
+
+| JSON key | Type | Notes |
+|----------|------|-------|
+| `firstName` | string | Read but **not persisted** |
+| `lastName` | string | Read but **not persisted** |
+| `name` | string | Persisted (in DB mode) |
+| `age` | int | Persisted. Must be a JSON **number** — string/empty → `400 bad json` |
+| `gender` | string | Persisted |
+| `email` | *not in struct* | Silently dropped |
+| `password` | *not in struct* | Silently dropped |
+
+**Success responses**
+
+DB mode (`userHandler(db)`), status `200`, `Content-Type: application/json`:
+```json
+{ "status": "ok", "id": 42, "name": "John Doe" }
+```
+- `id` is the new row's PK. `name` is `req.Name`. Both have `omitempty` in the `Response` struct.
+
+No-DB mode (`simpleHandler`), status `200`, `Content-Type: application/json`:
+```json
+{ "status": "ok", "name": "John Doe" }
+```
+
+**Error responses**
+
+| Status | Body | Trigger |
+|--------|------|---------|
+| `405` | `method not allowed` | Non-POST |
+| `400` | `bad json` | Malformed JSON, or type mismatch (e.g. `age: ""` or string) |
+| `500` | `internal server error` | DB insert error (**DB mode only**) |
+
+### `GET /health` *(DB mode only)*
+- Returns `200` with `{"status":"healthy"}` and `Content-Type: application/json`.
+- **Not registered in no-DB or DB-connect-failed modes** → `404 Not Found`.
+
+### `OPTIONS` preflight *(DB mode only)*
+- Allowed methods: `POST, OPTIONS, GET`.
+- Allowed headers: `Content-Type`.
+- Response: `204 No Content` + CORS headers.
+
+## 4. Data Models
+
+### `User` (unused struct, but defined)
+```go
+type User struct {
+    ID     int    `json:"id"`
+    Name   string `json:"name"`
+    Age    int    `json:"age"`
+    Gender string `json:"gender"`
+}
+```
+- Declared but **never referenced** by handlers. Kept as a canonical shape.
+
+### `UserRequest` (the actual request decoder)
+```go
+type UserRequest struct {
+    FirstName string `json:"firstName"`
+    LastName  string `json:"lastName"`
+    Name      string `json:"name"`
+    Age       int    `json:"age"`
+    Gender    string `json:"gender"`
+}
+```
+- `email`, `password` absent → ignored by JSON decoder.
+- `Age int` strict.
+
+### `Response` (DB mode only)
+```go
+type Response struct {
+    Status string `json:"status"`
+    ID     int    `json:"id,omitempty"`
+    Name   string `json:"name,omitempty"`
+}
+```
+
+### DB row shape (`users` table)
+
+| Column | Type | Notes |
+|--------|------|-------|
+| `id` | `SERIAL PRIMARY KEY` | Auto-increment |
+| `name` | `TEXT NOT NULL` | |
+| `age` | `INT NOT NULL` | |
+| `gender` | `TEXT NOT NULL` | |
+| `created_at` | `TIMESTAMP DEFAULT NOW()` | Auto |
+
+## 5. Handler Logic
+
+### `simpleHandler(w, r)` — no-DB mode
+1. `POST` only, else `405`.
+2. Decode into `UserRequest`; error → `400 bad json`.
+3. Respond `200` `{"status":"ok","name":req.Name}`. **No logging, no persistence.**
+
+### `userHandler(db)` — DB mode (returns `http.HandlerFunc`)
+1. `POST` only, else `405`.
+2. Decode into `UserRequest`; error → `400 bad json`.
+3. `INSERT INTO users (name, age, gender) VALUES ($1,$2,$3) RETURNING id` via `db.QueryRow(...).Scan(&id)`.
+4. On insert error → log + `500 internal server error`.
+5. Respond `200` `{status:"ok", id, name}`.
+
+### `healthHandler(w, r)` — DB mode only
+- Writes `Content-Type: application/json` and `{"status":"healthy"}`. No method check (any method returns 200).
+
+### `ensureTable(db)` — DB mode only
+- `CREATE TABLE IF NOT EXISTS users (id SERIAL PRIMARY KEY, name TEXT NOT NULL, age INT NOT NULL, gender TEXT NOT NULL, created_at TIMESTAMP DEFAULT NOW())`.
+- Runs once at startup. Fatal on error.
+
+## 6. CORS Middleware
+
+**Applied only in DB mode.** See [§2 Branch C](#branch-c--db-connect-succeeds-real-mode).
+
+```
+Access-Control-Allow-Origin: <FRONTEND_URL or *>
+Access-Control-Allow-Methods: POST, OPTIONS, GET
+Access-Control-Allow-Headers: Content-Type
+```
+
+- `OPTIONS` short-circuits with `204`.
+- **Not set:** `Access-Control-Allow-Credentials`, `Access-Control-Max-Age`, `Vary: Origin`.
+- **In no-DB mode, CORS is absent** — this is the biggest dev ergonomics gap.
 
 ## 7. Environment Variables
 
-| Variable | Required | Default | Purpose |
-|----------|----------|---------|---------|
-| `PORT` | No | `8080` | TCP port to listen on |
-| `FRONTEND_URL` | No | `*` | Value for `Access-Control-Allow-Origin` |
+| Variable | Required | Default | Consumed in | Effect |
+|----------|----------|---------|-------------|--------|
+| `DATABASE_URL` | No | (empty) | `main` | Empty → simple mode. Set → attempt Postgres. Example: `postgres://user:pass@localhost:5432/mydb?sslmode=disable` |
+| `PORT` | No | `8080` | `main` | Listening port |
+| `FRONTEND_URL` | No | `*` | CORS wrapper (DB mode only) | `Access-Control-Allow-Origin` value |
 
-**Example production env:**
-```bash
-PORT=8080
-FRONTEND_URL=https://app.example.com
+## 8. Database Schema
+
+Managed by `ensureTable` at startup (idempotent):
+
+```sql
+CREATE TABLE IF NOT EXISTS users (
+  id          SERIAL PRIMARY KEY,
+  name        TEXT NOT NULL,
+  age         INT NOT NULL,
+  gender      TEXT NOT NULL,
+  created_at  TIMESTAMP DEFAULT NOW()
+);
 ```
 
-> `backend/.gitignore` includes `.env` — safe for secrets if you later add any.
+- **No migrations tool.** Schema is created idempotently, but **changes to columns are not applied** on existing tables.
+- **No unique constraints** on name/email.
+- Query used: `INSERT INTO users (name, age, gender) VALUES ($1,$2,$3) RETURNING id`.
 
-Full env-var matrix across contexts: see [RUNBOOK.md Appendix C](./RUNBOOK.md#appendix-c--environment-variable-reference-all-contexts).
+Inspect inserted rows:
+```sql
+SELECT id, name, age, gender, created_at FROM users ORDER BY id DESC;
+```
 
 ---
 
 ## Appendix A — File-by-File Reference Matrix
 
-| File | Role | Primary Owner | Change Frequency |
-|------|------|---------------|------------------|
-| `backend/main.go` | API handler, CORS, server | Backend Dev | Frequent |
-| `backend/go.mod` | Module path + Go version | Backend Dev | Rare |
-| `backend/.gitignore` | Ignores env/node artifacts in backend | DevOps | Rare |
+| File | Role | Owner | Frequency |
+|------|------|-------|-----------|
+| `backend/main.go` | Dual-mode server: simple vs DB, CORS, `/health` | Backend Dev | Frequent |
+| `backend/go.mod` | Module path, Go 1.25, pgx/v5 | Backend Dev | Rare |
+| `backend/go.sum` | Checksums | Auto-generated | Auto |
+| `backend/testbin` | **Committed binary artifact** | — | Should be gitignored |
+| `backend/.gitignore` | Ignores `.env`, `dist/`, node artifacts | DevOps | Rare |
 
 ---
 
 ## Appendix B — API Reference Card
 
-**Endpoint:** `POST /api/user`
+**Endpoints**
 
-**Request headers**
-```
-Content-Type: application/json
-```
+| Method | Path | Modes | Auth | Notes |
+|--------|------|-------|------|-------|
+| POST | `/register` | both | none | Alias of `/api/user` |
+| POST | `/api/user` | both | none | Alias of `/register` |
+| GET | `/health` | **DB only** | none | 404 in no-DB / connect-fail modes |
+| OPTIONS | any | **DB only** | — | CORS preflight → 204 |
 
-**Request body (exact shape)**
+**POST `/register` request**
 ```json
-{ "name": "string", "age": 0, "gender": "string" }
+{
+  "firstName": "John",
+  "lastName": "Doe",
+  "name": "John Doe",
+  "email": "john@example.com",
+  "password": "••••",
+  "age": 25,
+  "gender": "male"
+}
 ```
-- `age` **must be a JSON number** — strings and `""` cause `400`.
-- Extra/unknown fields are silently ignored.
+- `age` **must be a JSON number**.
+- `email` / `password` are accepted but **ignored** by the backend.
 
 **Responses**
 
-| Case | Status | Content-Type | Body |
-|------|--------|--------------|------|
-| Success | `200` | `application/json` | `{"status":"ok","name":"<echoed name>"}` |
-| Wrong method (e.g. GET) | `405` | `text/plain` | `method not allowed` |
-| Malformed / type-mismatched JSON | `400` | `text/plain` | `bad json` |
-| CORS preflight (OPTIONS) | `204` | — | (empty) + CORS headers |
-
-**CORS headers on every response**
-```
-Access-Control-Allow-Origin: <FRONTEND_URL or *>
-Access-Control-Allow-Methods: POST, OPTIONS
-Access-Control-Allow-Headers: Content-Type
-```
+| Case | Mode | Status | Body |
+|------|------|--------|------|
+| Success | DB | 200 | `{"status":"ok","id":42,"name":"John Doe"}` |
+| Success | No-DB | 200 | `{"status":"ok","name":"John Doe"}` |
+| Wrong method | both | 405 | `method not allowed` |
+| Bad JSON / age wrong type | both | 400 | `bad json` |
+| DB insert error | DB | 500 | `internal server error` |
+| Health | DB | 200 | `{"status":"healthy"}` |
+| Health | No-DB | 404 | (mux default) |
 
 **Curl cheat-sheet**
+
 ```bash
-# Success
-curl -i -X POST localhost:8080/api/user -H 'Content-Type: application/json' \
+# Register (works in either mode)
+curl -i -X POST localhost:8080/register \
+  -H 'Content-Type: application/json' \
+  -d '{"firstName":"John","lastName":"Doe","name":"John Doe","age":25,"gender":"male"}'
+
+# Alias endpoint
+curl -i -X POST localhost:8080/api/user \
+  -H 'Content-Type: application/json' \
   -d '{"name":"Alice","age":30,"gender":"female"}'
 
+# Health (DB mode only; expect 404 otherwise)
+curl -i localhost:8080/health
+
 # Wrong method
-curl -i localhost:8080/api/user
+curl -i localhost:8080/register
 
-# Bad JSON type
-curl -i -X POST localhost:8080/api/user -H 'Content-Type: application/json' \
-  -d '{"name":"Alice","age":"","gender":"female"}'
+# Bad JSON type (age as string)
+curl -i -X POST localhost:8080/register \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"X","age":"","gender":"m"}'
 
-# Preflight
-curl -i -X OPTIONS localhost:8080/api/user \
+# Preflight (DB mode only)
+curl -i -X OPTIONS localhost:8080/register \
   -H 'Origin: http://localhost:3000' \
   -H 'Access-Control-Request-Method: POST'
-```
