@@ -35,9 +35,9 @@
 
 ```
 DATABASE_URL set?
-├─ NO  → simpleHandler on /api/user + /register; no CORS; no /health; listen on PORT (default 8080).
+├─ NO  → simpleHandler on /api/user + /register; CORS applied by simpleHandler; no /health; listen on PORT (default 8080).
 └─ YES → pgx.Connect(context.Background(), dsn)
-          ├─ FAIL → log; simpleHandler on /api/user + /register; no CORS; no /health; listen.
+          ├─ FAIL → log; simpleHandler on /api/user + /register; CORS applied by simpleHandler; no /health; listen.
           └─ OK   → defer db.Close(); ensureTable(db) (fatal if fails);
                     userHandler(db) on /api/user + /register;
                     GET /health → healthHandler;
@@ -57,13 +57,13 @@ log.Printf("Listening on :%s (no DB)", port)
 log.Fatal(http.ListenAndServe(":"+port, mux))
 ```
 
-- Uses a **bare `ServeMux`** with **no CORS wrapper**.
-- **No `/health`** endpoint.
-- **Cross-origin browser calls from `:3000` will fail** with a CORS error in the browser console (the request still reaches the server, but the browser blocks reading the response). Mitigation: set `DATABASE_URL`, add a Vite proxy, or patch the code.
+- Uses a **bare `ServeMux`**.
+- **CORS headers are applied directly within `simpleHandler`**.
+- **No `/health`** endpoint is registered in this mode.
 
 ### Branch B — DB connect fails
 
-Same handlers and same lack of CORS as Branch A, but logged as `DB connection failed, using simple handler on :<port>`. Practically equivalent to Branch A.
+Same handlers as Branch A, but logged as `DB connection failed, using simple handler on :<port>`. Practically equivalent to Branch A.
 
 ### Branch C — DB connect succeeds (real mode)
 
@@ -90,8 +90,8 @@ handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 log.Fatal(http.ListenAndServe(":"+port, handler))
 ```
 
-- CORS applied to all routes.
-- `/health` available.
+- CORS middleware wraps all routes.
+- `/health` endpoint is available.
 - Both `/api/user` and `/register` route to the **same** `userHandler(db)`.
 
 ## 3. API Contract
@@ -154,6 +154,7 @@ No-DB mode (`simpleHandler`), status `200`, `Content-Type: application/json`:
 - **Not registered in no-DB or DB-connect-failed modes** → `404 Not Found`.
 
 ### `OPTIONS` preflight *(DB mode only)*
+- **Not applicable in no-DB or DB-connect-failed modes**.
 - Allowed methods: `POST, OPTIONS, GET`.
 - Allowed headers: `Content-Type`.
 - Response: `204 No Content` + CORS headers.
@@ -206,9 +207,11 @@ type Response struct {
 ## 5. Handler Logic
 
 ### `simpleHandler(w, r)` — no-DB mode
-1. `POST` only, else `405`.
-2. Decode into `UserRequest`; error → `400 bad json`.
-3. Respond `200` `{"status":"ok","name":req.Name}`. **No logging, no persistence.**
+1. **CORS headers are now set directly within the handler**, including `Access-Control-Allow-Origin: *`.
+2. `OPTIONS` requests are handled with `204 No Content`.
+3. `POST` only, else `405`.
+4. Decode into `UserRequest`; error → `400 bad json`.
+5. Respond `200` `{"status":"ok","name":req.Name}`. **No logging, no persistence.**
 
 ### `userHandler(db)` — DB mode (returns `http.HandlerFunc`)
 1. `POST` only, else `405`.
@@ -226,7 +229,10 @@ type Response struct {
 
 ## 6. CORS Middleware
 
-**Applied only in DB mode.** See [§2 Branch C](#branch-c--db-connect-succeeds-real-mode).
+**Applied in both DB and no-DB modes.**
+
+- In DB mode, a wrapper `http.HandlerFunc` applies CORS to all routes based on `FRONTEND_URL`.
+- In no-DB mode, `simpleHandler` directly sets `Access-Control-Allow-Origin` to `*` and handles `OPTIONS` requests.
 
 ```
 Access-Control-Allow-Origin: <FRONTEND_URL or *>
@@ -236,7 +242,6 @@ Access-Control-Allow-Headers: Content-Type
 
 - `OPTIONS` short-circuits with `204`.
 - **Not set:** `Access-Control-Allow-Credentials`, `Access-Control-Max-Age`, `Vary: Origin`.
-- **In no-DB mode, CORS is absent** — this is the biggest dev ergonomics gap.
 
 ## 7. Environment Variables
 
@@ -291,8 +296,8 @@ SELECT id, name, age, gender, created_at FROM users ORDER BY id DESC;
 |--------|------|-------|------|-------|
 | POST | `/register` | both | none | Alias of `/api/user` |
 | POST | `/api/user` | both | none | Alias of `/register` |
-| GET | `/health` | **DB only** | none | 404 in no-DB / connect-fail modes |
-| OPTIONS | any | **DB only** | — | CORS preflight → 204 |
+| GET | `/health` | DB only | none | 404 in no-DB / connect-fail modes |
+| OPTIONS | any | DB only | — | CORS preflight → 204 |
 
 **POST `/register` request**
 ```json
