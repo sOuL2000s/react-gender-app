@@ -32,19 +32,32 @@ type Response struct {
 }
 
 func simpleHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	var req UserRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "bad json", http.StatusBadRequest)
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]string{"status": "ok", "name": req.Name})
+    // CORS headers
+    w.Header().Set("Access-Control-Allow-Origin", "*")
+    w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS, GET")
+    w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+    
+    // Handle preflight requests
+    if r.Method == http.MethodOptions {
+        w.WriteHeader(http.StatusNoContent)
+        return
+    }
+    
+    if r.Method != http.MethodPost {
+        http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+        return
+    }
+    
+    var req UserRequest
+    if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+        http.Error(w, "bad json", http.StatusBadRequest)
+        return
+    }
+    w.Header().Set("Content-Type", "application/json")
+    w.WriteHeader(http.StatusOK)
+    json.NewEncoder(w).Encode(map[string]string{"status": "ok", "name": req.Name})
 }
+
 
 func main() {
 	dsn := os.Getenv("DATABASE_URL")
