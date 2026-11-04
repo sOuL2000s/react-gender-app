@@ -8,7 +8,7 @@
 3. [API Contract](#3-api-contract)
 4. [Data Models](#4-data-models)
 5. [Handler Logic](#5-handler-logic)
-6. [CORS Middleware](#6-cors-middleware)
+6. [CORS](#6-cors)
 7. [Environment Variables](#7-environment-variables)
 8. [Database Schema](#8-database-schema)
 9. [Appendix A — File-by-File Reference Matrix](#appendix-a--file-by-file-reference-matrix)
@@ -26,8 +26,8 @@
   - `github.com/jackc/pgservicefile v0.0.0-2024…` — indirect (pgx dep).
   - `golang.org/x/text v0.41.0` — indirect.
 - **Stdlib used:** `context`, `encoding/json`, `log`, `net/http`, `os`.
-- Single file: `backend/main.go` (~150 lines).
-- **`backend/testbin`** — a committed binary artifact. Should be gitignored (see limitations).
+- Single file: `backend/main.go` (~165 lines).
+- **`backend/testbin`** — a committed binary artifact. Should be gitignored.
 
 ## 2. Server Entry & Dual-Mode Bootstrap (`main`)
 
@@ -35,13 +35,15 @@
 
 ```
 DATABASE_URL set?
-├─ NO  → simpleHandler on /api/user + /register; CORS applied by simpleHandler; no /health; listen on PORT (default 8080).
+├─ NO  → simpleHandler on /api/user + /register; CORS applied inside handler (allows *);
+│        no /health; listen on PORT (default 8080).
 └─ YES → pgx.Connect(context.Background(), dsn)
-          ├─ FAIL → log; simpleHandler on /api/user + /register; CORS applied by simpleHandler; no /health; listen.
+          ├─ FAIL → log; simpleHandler on /api/user + /register; CORS from handler;
+          │         no /health; listen.
           └─ OK   → defer db.Close(); ensureTable(db) (fatal if fails);
                     userHandler(db) on /api/user + /register;
                     GET /health → healthHandler;
-                    wrap in CORS middleware;
+                    wrap in CORS middleware (respects FRONTEND_URL);
                     listen on PORT (default 8080).
 ```
 
@@ -57,9 +59,9 @@ log.Printf("Listening on :%s (no DB)", port)
 log.Fatal(http.ListenAndServe(":"+port, mux))
 ```
 
-- Uses a **bare `ServeMux`**.
-- **CORS headers are applied directly within `simpleHandler`**.
-- **No `/health`** endpoint is registered in this mode.
+- Uses a **bare `ServeMux`**, but `simpleHandler` now **sets CORS headers itself** (`Access-Control-Allow-Origin: *`) and answers `OPTIONS` with `204`.
+- **No `/health`** endpoint is registered.
+- Browser calls from `:3000` will **not** be blocked by CORS (header is sent), but the origin is hardcoded to `*` — `FRONTEND_URL` is ignored in this branch.
 
 ### Branch B — DB connect fails
 
@@ -90,7 +92,7 @@ handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 log.Fatal(http.ListenAndServe(":"+port, handler))
 ```
 
-- CORS middleware wraps all routes.
+- CORS middleware wraps all routes and **respects `FRONTEND_URL`**.
 - `/health` endpoint is available.
 - Both `/api/user` and `/register` route to the **same** `userHandler(db)`.
 
@@ -134,7 +136,6 @@ DB mode (`userHandler(db)`), status `200`, `Content-Type: application/json`:
 ```json
 { "status": "ok", "id": 42, "name": "John Doe" }
 ```
-- `id` is the new row's PK. `name` is `req.Name`. Both have `omitempty` in the `Response` struct.
 
 No-DB mode (`simpleHandler`), status `200`, `Content-Type: application/json`:
 ```json
@@ -153,11 +154,10 @@ No-DB mode (`simpleHandler`), status `200`, `Content-Type: application/json`:
 - Returns `200` with `{"status":"healthy"}` and `Content-Type: application/json`.
 - **Not registered in no-DB or DB-connect-failed modes** → `404 Not Found`.
 
-### `OPTIONS` preflight *(DB mode only)*
-- **Not applicable in no-DB or DB-connect-failed modes**.
-- Allowed methods: `POST, OPTIONS, GET`.
-- Allowed headers: `Content-Type`.
-- Response: `204 No Content` + CORS headers.
+### `OPTIONS` preflight *(all modes)*
+- **No-DB mode:** handled inline by `simpleHandler` → `204 No Content`.
+- **DB mode:** handled by the CORS wrapper → `204 No Content`.
+- Allowed methods: `POST, OPTIONS, GET`. Allowed headers: `Content-Type`.
 
 ## 4. Data Models
 
@@ -170,7 +170,6 @@ type User struct {
     Gender string `json:"gender"`
 }
 ```
-- Declared but **never referenced** by handlers. Kept as a canonical shape.
 
 ### `UserRequest` (the actual request decoder)
 ```go
@@ -207,8 +206,8 @@ type Response struct {
 ## 5. Handler Logic
 
 ### `simpleHandler(w, r)` — no-DB mode
-1. **CORS headers are now set directly within the handler**, including `Access-Control-Allow-Origin: *`.
-2. `OPTIONS` requests are handled with `204 No Content`.
+1. **Sets CORS headers directly:** `Access-Control-Allow-Origin: *`, `-Methods: POST, OPTIONS, GET`, `-Headers: Content-Type`.
+2. `OPTIONS` → `204 No Content` and returns.
 3. `POST` only, else `405`.
 4. Decode into `UserRequest`; error → `400 bad json`.
 5. Respond `200` `{"status":"ok","name":req.Name}`. **No logging, no persistence.**
@@ -216,7 +215,7 @@ type Response struct {
 ### `userHandler(db)` — DB mode (returns `http.HandlerFunc`)
 1. `POST` only, else `405`.
 2. Decode into `UserRequest`; error → `400 bad json`.
-3. `INSERT INTO users (name, age, gender) VALUES ($1,$2,$3) RETURNING id` via `db.QueryRow(...).Scan(&id)`.
+3. `INSERT INTO users (name, age, gender) VALUES ($1,$2,$3) RETURNING id`.
 4. On insert error → log + `500 internal server error`.
 5. Respond `200` `{status:"ok", id, name}`.
 
@@ -227,21 +226,25 @@ type Response struct {
 - `CREATE TABLE IF NOT EXISTS users (id SERIAL PRIMARY KEY, name TEXT NOT NULL, age INT NOT NULL, gender TEXT NOT NULL, created_at TIMESTAMP DEFAULT NOW())`.
 - Runs once at startup. Fatal on error.
 
-## 6. CORS Middleware
+## 6. CORS
 
-**Applied in both DB and no-DB modes.**
+**Applied in all modes, but configured differently:**
 
-- In DB mode, a wrapper `http.HandlerFunc` applies CORS to all routes based on `FRONTEND_URL`.
-- In no-DB mode, `simpleHandler` directly sets `Access-Control-Allow-Origin` to `*` and handles `OPTIONS` requests.
+| Mode | Where | Origin value | Configurable? |
+|------|-------|--------------|---------------|
+| No-DB (default) | Inside `simpleHandler` | `*` (hardcoded) | ❌ — `FRONTEND_URL` is ignored |
+| DB connect fails | Inside `simpleHandler` | `*` (hardcoded) | ❌ |
+| DB connect succeeds | Wrapper around mux | `FRONTEND_URL` env or `*` | ✅ |
 
+**Common headers in all modes:**
 ```
-Access-Control-Allow-Origin: <FRONTEND_URL or *>
 Access-Control-Allow-Methods: POST, OPTIONS, GET
 Access-Control-Allow-Headers: Content-Type
 ```
 
-- `OPTIONS` short-circuits with `204`.
-- **Not set:** `Access-Control-Allow-Credentials`, `Access-Control-Max-Age`, `Vary: Origin`.
+**Not set:** `Access-Control-Allow-Credentials`, `Access-Control-Max-Age`, `Vary: Origin`.
+
+> **Suggested improvement:** wrap the no-DB/connect-fail branches in the same CORS function used in DB mode, honoring `FRONTEND_URL`. That removes the current inconsistency where origin restriction silently doesn't apply in dev.
 
 ## 7. Environment Variables
 
@@ -249,7 +252,7 @@ Access-Control-Allow-Headers: Content-Type
 |----------|----------|---------|-------------|--------|
 | `DATABASE_URL` | No | (empty) | `main` | Empty → simple mode. Set → attempt Postgres. Example: `postgres://user:pass@localhost:5432/mydb?sslmode=disable` |
 | `PORT` | No | `8080` | `main` | Listening port |
-| `FRONTEND_URL` | No | `*` | CORS wrapper (DB mode only) | `Access-Control-Allow-Origin` value |
+| `FRONTEND_URL` | No | `*` | CORS wrapper (DB mode only) | `Access-Control-Allow-Origin` value. **Ignored in no-DB mode.** |
 
 ## 8. Database Schema
 
@@ -280,7 +283,7 @@ SELECT id, name, age, gender, created_at FROM users ORDER BY id DESC;
 
 | File | Role | Owner | Frequency |
 |------|------|-------|-----------|
-| `backend/main.go` | Dual-mode server: simple vs DB, CORS, `/health` | Backend Dev | Frequent |
+| `backend/main.go` | Dual-mode server: simple (with inline CORS) vs DB, CORS wrapper, `/health` | Backend Dev | Frequent |
 | `backend/go.mod` | Module path, Go 1.25, pgx/v5 | Backend Dev | Rare |
 | `backend/go.sum` | Checksums | Auto-generated | Auto |
 | `backend/testbin` | **Committed binary artifact** | — | Should be gitignored |
@@ -297,7 +300,7 @@ SELECT id, name, age, gender, created_at FROM users ORDER BY id DESC;
 | POST | `/register` | both | none | Alias of `/api/user` |
 | POST | `/api/user` | both | none | Alias of `/register` |
 | GET | `/health` | DB only | none | 404 in no-DB / connect-fail modes |
-| OPTIONS | any | DB only | — | CORS preflight → 204 |
+| OPTIONS | any | both | — | CORS preflight → 204 (handler inline in no-DB; wrapper in DB) |
 
 **POST `/register` request**
 ```json
@@ -350,7 +353,8 @@ curl -i -X POST localhost:8080/register \
   -H 'Content-Type: application/json' \
   -d '{"name":"X","age":"","gender":"m"}'
 
-# Preflight (DB mode only)
+# Preflight (works in all modes now)
 curl -i -X OPTIONS localhost:8080/register \
   -H 'Origin: http://localhost:3000' \
   -H 'Access-Control-Request-Method: POST'
+```

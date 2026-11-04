@@ -43,8 +43,17 @@ The **Sign In** screen currently **does not check any credentials**. It pretends
 
 Think of the server as having two personalities:
 
-1. **"Memory-only" mode (default):** It receives the signup, replies "ok", and **forgets it immediately**. Useful for showing the UI without setting up a database. In this mode the **browser may refuse to display the server's reply** because of a missing "permission" header (CORS) — a known gap, not a bug in your data.
+1. **"Memory-only" mode (default):** It receives the signup, replies "ok", and **forgets it immediately**. Useful for showing the UI without setting up a database. It **does** reply properly to the browser (the "CORS" permission header is set automatically in this mode, so no browser-side blocking).
 2. **"Database" mode:** The server is pointed at a PostgreSQL database at startup; it creates a `users` table if missing and **saves every signup** there. It also exposes a small health-check URL (`/health`) that cloud platforms can poll to know the service is alive.
+
+A one-line difference worth knowing:
+
+| | Memory-only | Database |
+|---|---|---|
+| Saves data? | ❌ | ✅ |
+| Has `/health`? | ❌ | ✅ |
+| Browser can call from another site? | ✅ (but allowed from **any** site — fine for a demo, tighten for prod) | ✅ (only from the address you configure) |
+| Uses a database password? | No | Yes |
 
 ## What "done" would look like for a bigger version
 
@@ -74,10 +83,11 @@ If this becomes a real product, the obvious next steps (in plain terms):
 - **JSON** — a simple text format for data (looks like `{"name":"Alice","age":30}`).
 - **Route / router** — in the browser, a URL like `/register` that shows a particular screen without a full page reload.
 - **SPA (Single Page Application)** — a web app that loads once and switches screens in the browser; the hosting service must be told to always serve `index.html` for unknown paths.
-- **CORS** — a browser security rule requiring the server to say "yes, this website may read my response". If the server doesn't say it, the browser hides the response (the request may still have reached the server).
+- **CORS** — a browser security rule requiring the server to say "yes, this website may read my response". Both server modes now respond with that "yes" header; the difference is that memory-only mode says "yes to anyone" while database mode says "yes only to the address you configured".
 - **Environment variable** — a setting stored outside the code (e.g. database address, frontend URL).
 - **Database / Postgres** — a service that stores data permanently so it isn't forgotten between requests.
 - **Health check** — a small URL (`/health`) that cloud platforms poll to confirm the server is alive.
 - **Password hashing** — turning a password into a one-way scramble so even server staff can't read it; required for real auth.
 - **Build / deploy** — turning source code into files that run on servers, then putting them online.
 - **CI (Continuous Integration)** — an automated robot that runs lint/build/tests on every code change.
+- **gofmt** — Go's standard code formatter. CI now fails if any Go file isn't formatted with it.
