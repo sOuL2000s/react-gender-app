@@ -1,40 +1,50 @@
-# 📘 Project Documentation — Index
+# React + Vite (Inovix Labs Auth Demo)
 
-**Project:** React Gender App / Inovix Labs auth demo (React + Go + Postgres)
-**Audience:** developers, DevOps, QA, PMs, non-technical stakeholders
+> 📘 **Full documentation lives in [`docs/`](./docs/README.md).**
+> Start with the [documentation index](./docs/README.md) — it maps every role (developer, DevOps, QA, PM) to the right file.
 
-## Where to start
+A small full-stack demo: **React 19 + Vite 8 + React Router 7** frontend and a **Go 1.25 + `pgx/v5`** backend.
 
-| I am… | Start here |
-|-------|------------|
-| A new developer | [ARCHITECTURE.md](./ARCHITECTURE.md) → [FRONTEND.md](./FRONTEND.md) → [BACKEND-API.md](./BACKEND-API.md) |
-| A DevOps engineer | [RUNBOOK.md](./RUNBOOK.md) → [BACKEND-API.md §7 env vars](./BACKEND-API.md#7-environment-variables) |
-| A tester / QA | [TESTING.md](./TESTING.md) → [BACKEND-API.md §3 API contract](./BACKEND-API.md#3-api-contract) |
-| A project manager / non-technical | [NON-TECHNICAL.md](./NON-TECHNICAL.md) |
-| Just trying to run it | [RUNBOOK.md §1 Local setup](./RUNBOOK.md#1-local-development-setup) |
+- **Frontend:** `/register` (default) and `/login` pages under a shared "Inovix Labs" auth layout. `/login` is a **UI-only placeholder** (no real auth).
+- **Backend:** runs in **no-DB mode** (log-only, CORS allowed from any origin, no `/health`) by default, or in **Postgres mode** when `DATABASE_URL` is set and reachable (persists to `users`, CORS respects `FRONTEND_URL`, adds `/health`).
 
-## Document map
+## Run
 
-| File | Covers | Primary owner |
-|------|--------|---------------|
-| [ARCHITECTURE.md](./ARCHITECTURE.md) | Project overview, high-level diagram, dual-mode backend, end-to-end data flow | Maintainers |
-| [FRONTEND.md](./FRONTEND.md) | React app: stack, routing, pages (Register/Login), styling, assets, Vite, Oxlint, env vars, scripts | Frontend dev |
-| [BACKEND-API.md](./BACKEND-API.md) | Go API: dual-mode (no-DB vs Postgres), endpoints, models, CORS, health, env vars, API card | Backend dev |
-| [RUNBOOK.md](./RUNBOOK.md) | Local setup, Postgres, deployment/DevOps, troubleshooting, sample `.env`, CI scaffold | DevOps |
-| [TESTING.md](./TESTING.md) | Manual QA checklists (per mode), suggested automated tests, limitations, Definition of Done | QA / all |
-| [NON-TECHNICAL.md](./NON-TECHNICAL.md) | Plain-English summary + glossary | PM / stakeholders |
+**Frontend**
+```bash
+npm install
+npm run dev      # http://localhost:3000
+```
 
-## Recent changes (v0.1.0 → current)
+**Backend — no DB (fastest; works end-to-end from the UI)**
+```bash
+cd backend
+go run main.go
+```
 
-- **Frontend now multi-page:** `react-router-dom@7`, `/register` and `/login` routes, `/` redirects to `/register`.
-- **Backend now dual-mode:** runs without a DB (in-memory log-only), or with `DATABASE_URL` set → Postgres via `pgx/v5`. Adds `/health` in DB mode only.
-- **Known gap:** frontend sends `email`/`password` but backend does **not** store them; register endpoint is not real auth.
+**Backend — with Postgres (recommended for anything resembling prod)**
+```bash
+export DATABASE_URL='postgres://postgres:postgres@localhost:5432/appdb?sslmode=disable'
+export FRONTEND_URL='http://localhost:3000'
+cd backend && go run main.go
+```
 
-## Keeping docs in sync
+**Env**
+- Frontend: `VITE_API_URL=http://localhost:8080/register` (baked at build time)
+- Backend: `DATABASE_URL`, `PORT` (default `8080`), `FRONTEND_URL` (default `*`, DB mode only)
 
-Whenever the API shape, env vars, ports, or scripts change, update **the same PR**:
-- [BACKEND-API.md §3](./BACKEND-API.md#3-api-contract) (contract)
-- [BACKEND-API.md §7](./BACKEND-API.md#7-environment-variables) + [FRONTEND.md §8](./FRONTEND.md#8-environment-variables) (env vars)
-- [TESTING.md](./TESTING.md) checklists
+See [`docs/RUNBOOK.md`](./docs/RUNBOOK.md) for full setup, deployment, troubleshooting, and the env-var matrix.
 
-**Source of truth:** the code. If a doc disagrees with the code, the code wins — open a doc-fix PR.
+## Key facts at a glance
+
+| Item | Value |
+|------|-------|
+| Frontend dev port | `3000` |
+| Backend port | `8080` (`PORT`) |
+| Backend endpoints | `POST /register`, `POST /api/user` (alias), `GET /health` (**DB mode only**) |
+| CORS | Always sent — `*` in no-DB mode; `FRONTEND_URL or *` in DB mode |
+| Auth | None (Login is simulated) |
+| DB | Optional Postgres; table `users` auto-created |
+| Known gaps | `email`/`password` not stored; `age` can be `''` → 400; `FRONTEND_URL` ignored in no-DB mode |
+
+See [`docs/TESTING.md §5`](./docs/TESTING.md#5-known-limitations--recommended-improvements) for the full 26-item backlog.

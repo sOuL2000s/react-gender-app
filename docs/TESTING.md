@@ -29,7 +29,7 @@
 - [ ] Age uses `type=text` + `pattern="[0-9]*"` → non-digit input blocked on submit.
 - [ ] Gender is a `<select>` with empty placeholder + Male/Female/Other.
 - [ ] Submit with backend up (DB mode) → status `Registration successful!` and all fields clear.
-- [ ] Submit with backend up (no-DB mode) → expect a browser **CORS error** (documented gap).
+- [ ] Submit with backend up (no-DB mode) → status `Registration successful!` and all fields clear. ✅ *(CORS headers are now set by `simpleHandler`.)*
 - [ ] Backend down → status `Error: Failed to fetch`.
 - [ ] Backend returns non-2xx → status `Error: HTTP <code>`.
 - [ ] Status message persists until next submit.
@@ -47,7 +47,7 @@
 - [ ] At ≤768px, panels stack vertically; card max-width 440px.
 - [ ] Focus states on inputs show purple border + glow.
 - [ ] Subtitle/status/footer colors legible in both light and dark OS themes.
-- [ ] **Conflict check:** page text alignment and `#root` width consistent (index.css vs App.css overlap — see §5 item 8).
+- [ ] **Conflict check:** page text alignment and `#root` width consistent (index.css vs App.css overlap — see §5 item 12).
 
 ### Build & lint
 - [ ] `npm run lint` exits 0.
@@ -62,10 +62,11 @@
 - [ ] `POST /register` valid JSON → `200 {"status":"ok","name":…}`.
 - [ ] `POST /api/user` valid → `200 {"status":"ok","name":…}` (alias).
 - [ ] `GET /register` → `405 method not allowed`.
+- [ ] `OPTIONS /register` with `Origin` → `204` + `Access-Control-Allow-Origin: *`.
 - [ ] Invalid JSON → `400 bad json`.
 - [ ] `age` as string/empty → `400 bad json`.
 - [ ] `GET /health` → **404**.
-- [ ] **No CORS headers** on responses (this is the documented gap).
+- [ ] Response headers include `Access-Control-Allow-Origin: *` (verifies inline CORS in `simpleHandler`).
 
 ### DB mode (`DATABASE_URL` set, reachable)
 - [ ] Server logs `Listening on :8080` (no "no DB" suffix).
@@ -81,28 +82,31 @@
   ```sql
   SELECT id, name, age, gender, created_at FROM users ORDER BY id DESC LIMIT 5;
   ```
-- [ ] Simulate insert failure (e.g. drop NOT NULL constraint via a bad request? not possible — instead temporarily rename column) → `500 internal server error` + backend log `DB insert error: …`.
+- [ ] Simulate insert failure → `500 internal server error` + backend log `DB insert error: …`.
 
 ### DB connect fails mode
 - [ ] Set `DATABASE_URL=postgres://bad@nowhere:1/x` → server logs `DB connection failed: … using simple handler on :8080`.
-- [ ] Behaves like no-DB mode (no `/health`, no CORS).
+- [ ] Behaves like no-DB mode (no `/health`).
+- [ ] CORS still applied by `simpleHandler` (origin `*`).
 
 ## 3. Integration scenarios
 
 | Scenario | Expected |
 |----------|----------|
-| **DB mode + valid register** | UI: status `Registration successful!`, form clears; backend: `200 {status,id,name}`; DB: one new row with matching name/age/gender; backend log has no errors. |
+| **DB mode + valid register** | UI: status `Registration successful!`, form clears; backend: `200 {status,id,name}`; DB: one new row with matching name/age/gender. |
 | **DB mode + backend down** | UI: status `Error: Failed to fetch`; no DB row. |
 | **DB mode + `age` empty (client bypass)** | Backend `400 bad json`; UI shows `Error: HTTP 400`. |
-| **DB mode + wrong `FRONTEND_URL`** | Browser blocks response (CORS error in console); request still reaches server (visible in backend logs). |
+| **DB mode + mismatched `FRONTEND_URL`** | Browser blocks response (CORS error in console); request still reaches server (visible in backend logs). |
 | **DB mode + `/health` probe** | `200 {"status":"healthy"}` — safe for LB/k8s probes. |
-| **No-DB mode + register from UI** | Browser CORS error (no `Access-Control-Allow-Origin`); backend still receives and responds, but browser hides response; UI shows `Error: Failed to fetch` (or `TypeError: Failed to fetch`). |
-| **No-DB mode + curl register** | `200 {"status":"ok","name":…}` (curl doesn't enforce CORS). |
+| **No-DB mode + register from UI** | UI: status `Registration successful!`, form clears; backend: `200 {"status":"ok","name":…}`. ✅ *(CORS headers are sent by `simpleHandler`.)* |
+| **No-DB mode + curl register** | `200 {"status":"ok","name":…}`. |
 | **No-DB mode + `/health`** | `404`. |
-| **DB connect fails + register via curl** | `200 {"status":"ok","name":…}` (simple handler); **no row** in DB (even if DB came back later). |
+| **No-DB mode + `OPTIONS` preflight** | `204` + `Access-Control-Allow-Origin: *` (from `simpleHandler`). |
+| **DB connect fails + register via curl** | `200 {"status":"ok","name":…}` (simple handler); **no row** in DB. |
 | **Login page submit** | No network request; status transitions `Logging in...` → `Login successful!`; stays on `/login`. |
 | **SPA deep link (prod)** | Direct visit to `/register` loads the app (requires history fallback on the host). |
-| **Email/password submitted** | Backend ignores them; they do **not** appear in `users` table. Verify with `SELECT * FROM users;`. |
+| **Email/password submitted** | Backend ignores them; they do **not** appear in `users` table. |
+| **`FRONTEND_URL` in no-DB mode** | Ignored — origin is always `*` in that branch (see §5 item 1). |
 
 ## 4. Suggested automated tests
 
@@ -112,11 +116,12 @@
   - GET → 405 `method not allowed`.
   - Malformed JSON → 400 `bad json`.
   - `age` as string → 400.
+  - OPTIONS → 204 with `Access-Control-Allow-Origin: *`.
+  - POST response also has `Access-Control-Allow-Origin: *`.
 - `userHandler(db)` (needs a Postgres test container, e.g. `testcontainers-go` or CI service):
   - POST valid → 200, body includes `id` and `name`; row exists.
-  - POST with DB failure (mock or closed conn) → 500.
-- CORS wrapper:
-  - `OPTIONS` → 204 + headers; `Access-Control-Allow-Origin` reflects `FRONTEND_URL`.
+  - POST with DB failure → 500.
+- CORS wrapper (DB mode): `OPTIONS` → 204 + `Access-Control-Allow-Origin` reflects `FRONTEND_URL`.
 - `healthHandler` → 200 `{"status":"healthy"}`.
 - `ensureTable` on empty DB → table exists; second call is idempotent.
 
@@ -124,7 +129,7 @@
 - Router: `/` redirects to `/register`; `/login` renders Sign In.
 - `RegisterPage`: typing updates inputs; submit calls `fetch` with expected URL/headers/body; success clears fields; error shows `Error:`.
 - `LoginPage`: submit triggers 1s delay then success; **asserts `fetch` is NOT called**.
-- Age coercion: empty `age` → payload `age` should ideally be a number or omitted (current: `""` → add a failing test to drive the fix).
+- Age coercion: empty `age` → payload `age` should ideally be a number or omitted (current: `""`).
 - Nav links between pages work.
 
 ### Contract test (protects the field mismatch)
@@ -136,7 +141,7 @@
 
 | # | Area | Issue | Recommendation |
 |---|------|-------|----------------|
-| 1 | **Backend / CORS** | CORS wrapper applied **only** in DB mode → browser calls from `:3000` fail in no-DB mode | Wrap **all** branches in the CORS handler; OR add Vite proxy for dev; OR add `w.Header().Set("Access-Control-Allow-Origin", …)` in `simpleHandler` too |
+| 1 | **Backend / CORS hardening** | `simpleHandler` (no-DB and connect-fail branches) hardcodes `Access-Control-Allow-Origin: *` and ignores `FRONTEND_URL`. Functionally works, but origin is unrestricted and inconsistent with DB mode. | Extract CORS to a reusable wrapper, honor `FRONTEND_URL` in all branches (default `*` for dev), and drop the inline headers from `simpleHandler`. |
 | 2 | Backend / Frontend | Frontend sends `email` + `password` but backend `UserRequest` has no such fields → silently dropped | Add fields + `password_hash` column; or remove them from frontend UI (a login/register without credentials is misleading) |
 | 3 | Frontend | `age` sends `""` when empty → backend `400 bad json` | Coerce `age` to number or omit; add required positive integer |
 | 4 | Backend | `Login` has no server-side counterpart — not real auth | Add `POST /login`, password hashing (bcrypt/argon2), sessions/JWT; or clearly label the page as a demo |
@@ -153,18 +158,20 @@
 | 15 | Frontend | `Login` shows fake success — misleading to users | Label as demo or wire to real API |
 | 16 | Frontend | No loading spinner / disabled submit during request | Add `isSubmitting` state, disable button, spinner |
 | 17 | Frontend | Status message is generic (`Error: HTTP 400`); server error body not shown | Parse `res.text()` on error and surface a friendly message |
-| 18 | Ops | No CI, no Dockerfile in repo, no `.env.example` | Add `.github/workflows/ci.yml`, `Dockerfile`, `.env.example` |
+| 18 | Ops | No CI, no Dockerfile in repo, no `.env.example` | Add `.github/workflows/ci.yml`, `Dockerfile`, `.env.example` (CI scaffold is in [RUNBOOK.md Appendix H](./RUNBOOK.md#appendix-h--suggested-ci-pipeline-scaffold)) |
 | 19 | Ops | No logging structure (plain `log` package) | Consider `slog` for structured JSON logs (Go 1.21+) |
 | 20 | Docs | `README.md` is template-heavy | Point readers to `docs/` |
 | 21 | Testing | No automated tests | Add Go `httptest` + Vitest/RTL (see §4) |
 | 22 | Security | No rate limiting, no auth, no CSRF, no HTTPS assumption | Add at the edge (LB/WAF), and password hashing for real auth |
 | 23 | Version drift | `go.mod` declares `go 1.25.0` — ensure the build image uses ≥ 1.25 | Pin `golang:1.25` in Dockerfile; update CI matrix |
 | 24 | Deps | `pgx/v5` pulls `golang.org/x/text` indirect — keep `go mod tidy` in CI | Add `go mod tidy -diff` check |
-| 25 | Backend | `main.go` DB-connect-failure branch has inconsistent indentation (cosmetic; gofmt fixes) | Run `gofmt -w backend/main.go` in CI |
+| 25 | Backend / formatting | `main.go` DB-connect-failure branch is under-indented (cosmetic) | Run `gofmt -w backend/`; CI enforces via `gofmt check` ([RUNBOOK.md Appendix H](./RUNBOOK.md#appendix-h--suggested-ci-pipeline-scaffold)) |
+| 26 | Backend / CORS parity | `simpleHandler` (no-DB) → `*`; CORS wrapper (DB) → `FRONTEND_URL`. Behavior differs by mode — subtle. | Unify: same helper, same source (`FRONTEND_URL`), same default. Documented in [ARCHITECTURE.md §6](./ARCHITECTURE.md#6-cross-cutting-gaps-read-first) and [BACKEND-API.md §6](./BACKEND-API.md#6-cors). |
 
 ## Appendix E — Definition of Done (Per Feature)
 
 - [ ] Code merged to main; `npm run lint` passes; `go vet ./...` passes; `go build ./...` passes.
+- [ ] `gofmt -l backend/` prints nothing (or the CI `gofmt check` step passes).
 - [ ] Frontend and backend production builds succeed (`npm run build`, `go build -o … .`).
 - [ ] **Both** backend modes tested (no-DB **and** DB) — see §2.
 - [ ] If a new env var was added, documented in [BACKEND-API.md §7](./BACKEND-API.md#7-environment-variables) and [RUNBOOK.md Appendix C](./RUNBOOK.md#appendix-c--environment-variable-reference-all-contexts).
@@ -178,8 +185,8 @@
 
 ## Appendix I — Onboarding Path (New Contributor, 30 minutes)
 
-1. **Read** [ARCHITECTURE.md §1–§4](./ARCHITECTURE.md) (10 min) — overall shape + dual backend modes + data flow.
-2. **Run** [RUNBOOK.md §1 Option B](./RUNBOOK.md#option-b--postgres-mode-recommended) (10 min) — DB mode gives the smoothest end-to-end path.
+1. **Read** [ARCHITECTURE.md §1–§4](./ARCHITECTURE.md) (10 min) — overall shape + dual backend modes + data flow + CORS story.
+2. **Run** [RUNBOOK.md §1 Option B](./RUNBOOK.md#option-b--postgres-mode-recommended-for-anything-resembling-prod) (10 min) — DB mode gives the smoothest end-to-end path.
 3. **Skim** [FRONTEND.md §3](./FRONTEND.md#3-pages) (Register + Login) and [BACKEND-API.md §5](./BACKEND-API.md#5-handler-logic) (simple vs DB handlers) (5 min).
 4. **Skim** [BACKEND-API.md Appendix B](./BACKEND-API.md#appendix-b--api-reference-card) and [RUNBOOK.md Appendix C](./RUNBOOK.md#appendix-c--environment-variable-reference-all-contexts) (5 min) — full contract surface.
 5. **Pick a task** from §5 above and follow Appendix E when done.

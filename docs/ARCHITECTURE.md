@@ -18,8 +18,8 @@ The **React Gender App** (UI branded "Inovix Labs") is a small full-stack demo t
 
 - **Frontend:** React 19 + Vite 8 + React Router 7. Two pages: `/register` (default) and `/login`. A shared branded auth layout (dark slate + purple gradient split panel).
 - **Backend:** Go 1.25 HTTP API with **two operating modes**:
-  - **No-DB mode** (default when `DATABASE_URL` is unset) — in-memory, log-only, no CORS, no `/health`.
-  - **Postgres mode** (when `DATABASE_URL` is set and the connection succeeds) — persists registrations to a `users` table via `pgx/v5`, adds `/health`, enables CORS.
+  - **No-DB mode** (default when `DATABASE_URL` is unset) — in-memory, log-only. **CORS is applied inline inside `simpleHandler`** (allows `*`). No `/health` endpoint.
+  - **Postgres mode** (when `DATABASE_URL` is set and the connection succeeds) — persists registrations to a `users` table via `pgx/v5`, adds `/health`, wraps the mux in a CORS middleware that respects `FRONTEND_URL`.
 
 **What it is NOT (yet):**
 - Not real authentication — `Login` is simulated client-side; there is no session, JWT, or password verification.
@@ -35,6 +35,7 @@ The **React Gender App** (UI branded "Inovix Labs") is a small full-stack demo t
 | Backend endpoints | `/api/user`, `/register`, `/health` (health only in DB mode) |
 | DB (optional) | Postgres via `pgx/v5`; table `users` auto-created |
 | Auth | None (simulated on login page) |
+| CORS | Always sent — `*` in no-DB mode; `FRONTEND_URL or *` in DB mode |
 
 ---
 
@@ -45,10 +46,13 @@ The **React Gender App** (UI branded "Inovix Labs") is a small full-stack demo t
 ```
 ┌────────────────────────┐     POST /register (JSON)      ┌────────────────────────┐
 │ React (Vite :3000)     │  ──────────────────────────►   │ Go (net/http :8080)    │
-│  /register, /login     │     (no CORS middleware!)      │  simpleHandler         │
+│  /register, /login     │   + CORS headers (from handler)│  simpleHandler         │
 │  BrowserRouter         │  ◄──────────────────────────   │  (log-only, no DB)     │
 └────────────────────────┘   200 {status:"ok", name}      └────────────────────────┘
 ```
+
+- CORS is applied **inline** in `simpleHandler` with `Access-Control-Allow-Origin: *`.
+- `OPTIONS` preflight → `204 No Content`.
 
 ### 2b. Postgres mode (when `DATABASE_URL` is set and reachable)
 
@@ -73,11 +77,11 @@ The **React Gender App** (UI branded "Inovix Labs") is a small full-stack demo t
 ```
 START
  └─ DATABASE_URL set?
-     ├─ NO  → simpleHandler on /api/user + /register; no CORS; no /health; listen.
+     ├─ NO  → simpleHandler on /api/user + /register; CORS from handler (allows *); no /health; listen.
      └─ YES → pgx.Connect()
-               ├─ FAIL → log; simpleHandler; no CORS; no /health; listen.
+               ├─ FAIL → log; simpleHandler; CORS from handler (allows *); no /health; listen.
                └─ OK   → ensureTable(); userHandler(db) on /api/user + /register;
-                          /health; CORS wrapper; listen.
+                          /health; CORS wrapper (respects FRONTEND_URL); listen.
 ```
 
 ---
@@ -90,11 +94,12 @@ START
 | Persistence | None (log only) | `INSERT INTO users` |
 | Response body | `{"status":"ok","name":<name>}` | `{"status":"ok","id":<int>,"name":<name>}` |
 | `/health` endpoint | ❌ not registered (404) | ✅ `{"status":"healthy"}` |
-| CORS headers | ❌ **none** (browser will block cross-origin!) | ✅ reflects `FRONTEND_URL` or `*` |
+| CORS headers | ✅ **always `*`** (set inside `simpleHandler`) | ✅ reflects `FRONTEND_URL` or `*` |
+| CORS configurable via `FRONTEND_URL`? | ❌ **no** — always `*` | ✅ yes |
 | Tables created | — | `users` via `CREATE TABLE IF NOT EXISTS` |
-| Implication for dev | Works **same-origin only** (e.g. Vite proxy) or if you don't care about browser CORS errors | Works cross-origin from `:3000` |
+| Dev impact | Works cross-origin from `:3000` (browser won't block) | Same |
 
-> **⚠️ Critical dev ergonomics:** In no-DB mode the frontend at `:3000` calling backend at `:8080` **will fail in the browser** with a CORS error, because the fallback branch registers handlers on a bare `http.ServeMux` with **no CORS middleware**. Either (a) set `DATABASE_URL` (even to a throwaway Postgres), or (b) add a Vite dev proxy, or (c) patch the backend to apply CORS in all branches. See [TESTING.md §4](./TESTING.md#4-known-limitations--recommended-improvements) item 1.
+> **Note:** In no-DB mode the browser will **not** block cross-origin requests (the handler sets `Access-Control-Allow-Origin: *`), but the origin restriction is hardcoded. `FRONTEND_URL` only affects DB mode. See [TESTING.md §5 item 1](./TESTING.md#5-known-limitations--recommended-improvements) for the recommended hardening.
 
 ---
 
@@ -112,8 +117,8 @@ START
    }
    ```
 4. `fetch(POST, API_ENDPOINT)` where `API_ENDPOINT = VITE_API_URL || "http://localhost:8080/register"`.
-5. **DB mode:** browser sends OPTIONS preflight → CORS middleware → 204; then POST → `userHandler` inserts row → `200 {status:"ok",id,name}`. Register clears the form on success.
-6. **No-DB mode:** browser sends POST (no preflight allowed → browser blocks unless same-origin) → `simpleHandler` returns `{status:"ok",name:<req.Name>}`.
+5. **DB mode:** browser sends OPTIONS preflight → CORS wrapper → 204; then POST → `userHandler` inserts row → `200 {status:"ok",id,name}`. Register clears the form on success.
+6. **No-DB mode:** browser sends POST (handler also answers OPTIONS with 204 + CORS) → `simpleHandler` returns `{status:"ok",name:<req.Name>}`. Form clears on success.
 
 ### 4b. Login flow (client-only, no API)
 1. Navigate to `/login` (via link on Register page).
@@ -132,7 +137,7 @@ START
 │   ├── testbin                  # ⚠️ committed build artifact (should be gitignored)
 │   ├── go.mod                   # module github.com/example/user-api; go 1.25.0; pgx/v5
 │   ├── go.sum                   # Checksums for pgx and transitive deps
-│   └── main.go                  # Dual-mode server: simpleHandler OR userHandler(db)
+│   └── main.go                  # Dual-mode server: simpleHandler (with inline CORS) OR userHandler(db)
 │
 ├── src/                         # React frontend source
 │   ├── assets/                  # Images & SVGs bundled by Vite
@@ -175,11 +180,12 @@ START
 
 These affect everyone, so they are surfaced at the top level:
 
-1. **CORS missing in no-DB fallback** — browser calls from `:3000` to `:8080` will be blocked in that mode. Mitigations: set a `DATABASE_URL`, add a Vite proxy, or patch `main.go` to always wrap in CORS.
-2. **Frontend/backend field mismatch** — frontend sends `email` & `password`; backend ignores both. Don't assume they're persisted.
+1. **Origin hardening in no-DB mode** — `simpleHandler` always emits `Access-Control-Allow-Origin: *`, ignoring `FRONTEND_URL`. This is a *security/consistency* gap (not a browser-blocks you gap like before). Mitigation: wrap no-DB mux in the same CORS function used in DB mode and drop `*`.
+2. **Frontend/backend field mismatch** — frontend sends `email` & `password`; backend `UserRequest` ignores both. Don't assume they're persisted.
 3. **`age` may be `''`** when the form is empty (frontend), causing `400 bad json` from the backend.
 4. **Two UIs coexisting** — `index.css` (legacy) vs `App.css` (current theme). Both target `body`, `#root`; visual conflicts possible.
 5. **`src/mainApp.jsx` and `backend/testbin`** are stray/leftover files — should be removed or gitignored.
+6. **Inconsistent formatting** — `main.go` DB-connect-failure branch is under-indented; run `gofmt -w backend/`. See [TESTING.md §5 item 25](./TESTING.md#5-known-limitations--recommended-improvements).
 
 ---
 
