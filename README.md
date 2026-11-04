@@ -1,5 +1,8 @@
 # React + Vite
 
+> 📘 **Full documentation lives in [`docs/`](./docs/README.md).**
+> Start with the [documentation index](./docs/README.md) — it maps every role (developer, DevOps, QA, PM) to the right file.
+
 This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
 
 ## Project
