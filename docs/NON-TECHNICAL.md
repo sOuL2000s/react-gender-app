@@ -34,7 +34,7 @@ The **Sign In** screen currently **does not check any credentials**. It pretends
 | Last name | ✅ | Only as part of the combined `name` |
 | Email | ✅ | ❌ **not saved** |
 | Password | ✅ | ❌ **not saved** |
-| Age | ✅ | ✅ |
+| Age | ✅ | ✅ (including `0` — no range check) |
 | Gender | ✅ | ✅ |
 
 > ⚠️ **Security note for stakeholders:** Passwords are transmitted in plain form to the server but are **not stored** by the current backend. In a real product, this would be unacceptable — passwords must be hashed on the server (and the connection must be HTTPS). Treat this as a demo.
@@ -45,6 +45,8 @@ Think of the server as having two personalities:
 
 1. **"Memory-only" mode (default):** It receives the signup, replies "ok", and **forgets it immediately**. Useful for showing the UI without setting up a database. It **does** reply properly to the browser (the "CORS" permission header is set automatically in this mode, so no browser-side blocking).
 2. **"Database" mode:** The server is pointed at a PostgreSQL database at startup; it creates a `users` table if missing and **saves every signup** there. It also exposes a small health-check URL (`/health`) that cloud platforms can poll to know the service is alive.
+
+> ⚠️ **Freshness warning for stakeholders:** the `dist/` folder that ships with the repository is **out of date**. It was built from an older version of the signup screen and points at a different server URL. Whoever deploys must **rebuild** it first (`npm run build`). Do not hand the checked-in `dist/` to a hosting provider.
 
 A one-line difference worth knowing:
 
@@ -65,6 +67,8 @@ If this becomes a real product, the obvious next steps (in plain terms):
 4. **Account page / dashboard** — a screen listing registered users or the current user's profile.
 5. **Email verification** — confirm the email address belongs to the person.
 6. **Deployment polish** — CI, Docker, HTTPS, and monitoring.
+7. **Fix the build pipeline** — stop committing `dist/`; always rebuild from `src/`; add a lockfile so installs are reproducible.
+8. **Make the server fail loudly** — if the database is unreachable at startup, the server currently pretends everything is fine and stops saving data. It should retry or refuse to start.
 
 ## Who is involved and what they care about
 

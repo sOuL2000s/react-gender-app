@@ -38,7 +38,7 @@ From `package.json`:
 ## 2. Entry Point & Routing
 
 **`index.html`**
-- Loads `/favicon.svg`; title `react-gender-app`; mounts `<div id="root">`; loads `/src/main.jsx`.
+- Loads `/favicon.svg`; title is **`Test App`** (the built `dist/index.html` says `react-gender-app` — rebuild will reset it); mounts `<div id="root">`; loads `/src/main.jsx`.
 
 **`src/main.jsx`** *(updated)*
 ```jsx
@@ -114,6 +114,7 @@ const API_ENDPOINT =
   import.meta.env.VITE_API_URL || "http://localhost:8080/register";
 ```
 - Default now points to **`/register`** (not `/api/user`).
+- ⚠️ **The committed `dist/` bundle does NOT match this.** It hardcodes `http://localhost:8080/api/user` (no `import.meta.env` substitution). Rebuild before deploy.
 
 **Payload sent**
 ```js
@@ -168,6 +169,8 @@ const API_ENDPOINT =
 - Gender uses a `<select>` with an empty placeholder option (`required` → blocked until chosen).
 - On success the form clears; the status message remains until next submit.
 - Backend response body is **not displayed** (only used to satisfy `await res.json()`).
+- On error, the server's response body is **discarded** — the user only sees `Error: HTTP <code>`. Consider reading `res.text()` and surfacing the server's message.
+- ⚠️ **The committed `dist/` bundle does not match this component**: it posts to `http://localhost:8080/api/user` with a hardcoded URL and ignores `VITE_API_URL`. Rebuild before testing the built artifact.
 
 ### 3.2 `src/pages/Login.jsx`
 
@@ -211,7 +214,7 @@ const API_ENDPOINT =
 There are **two CSS files** with different themes now coexisting.
 
 ### `src/index.css` (global, legacy)
-Loaded first in `main.jsx`. Defines `:root` CSS variables (`--text`, `--bg`, `--accent`, `--shadow` …), a light/dark palette via `prefers-color-scheme`, system font stack, and a `#root` layout (1126px max-width column, side borders, flex column, centered text, `min-height: 100svh`). No current page uses those variables directly, but they still style `body`, `#root`, `h1`, `h2`, `code`.
+Loaded first in `main.jsx`. Defines `:root` CSS variables (`--text`, `--bg`, `--accent`, `--shadow` …), a light/dark palette via `prefers-color-scheme`, system font stack, and a `#root` layout (1126px max-width column, side borders, flex column, centered text, `min-height: 100svh`). No current page uses those variables directly, but they still style `body`, `#root`, `h1`, `h2`, `code`. **This is live, not theoretical**: the built `dist/assets/index-CgBc2zQV.css` concatenates both files, so `#root`'s 1126px bordered column coexists with `.auth-container`'s full-screen layout.
 
 ### `src/App.css` (current, "Inovix Labs" theme)
 Imported by `pages/Register.jsx` and `pages/Login.jsx` (and by the unused `mainApp.jsx`). Provides:
@@ -241,7 +244,7 @@ Imported by `pages/Register.jsx` and `pages/Login.jsx` (and by the unused `mainA
 
 - **`src/assets/hero.png`** — unused binary (external URL in file listing).
 - **`src/assets/react.svg`, `src/assets/vite.svg`** — unused logos.
-- **`public/icons.svg`** — SVG sprite: `bluesky-icon`, `discord-icon`, `documentation-icon`, `github-icon`, `social-icon`, `x-icon`. Not referenced by current pages.
+- **`public/icons.svg`** — SVG sprite: `bluesky-icon`, `discord-icon`, `documentation-icon`, `github-icon`, `social-icon`, `x-icon`. Not referenced by current pages. A copy also exists at `dist/icons.svg` (committed stale build output).
 - **`public/favicon.svg`** — used by `index.html`.
 
 **DevOps:** `public/*` are copied verbatim into `dist/`; `src/assets/*` are hashed and processed by Vite.
@@ -256,18 +259,18 @@ export default defineConfig({
 });
 ```
 - Dev server on **`:3000`**, no `strictPort` (may auto-increment to 3001 if busy).
-- **No proxy** → frontend calls backend cross-origin (`:8080`); CORS must be configured on the backend. In no-DB backend mode CORS is **not** applied (see [ARCHITECTURE.md §3](./ARCHITECTURE.md#3-backend-modes-no-db-vs-postgres)).
+- **No proxy** → frontend calls backend cross-origin (`:8080`); CORS must be configured on the backend. In no-DB backend mode CORS **is** applied (`simpleHandler` sets `Access-Control-Allow-Origin: *`) — see [ARCHITECTURE.md §3](./ARCHITECTURE.md#3-backend-modes-no-db-vs-postgres). *(Earlier revisions of this doc said the opposite; corrected.)*
 - Build default `dist/`. SPA needs history fallback (`try_files $uri /index.html` for Nginx).
 
 ## 7. Linting (Oxlint)
 
-Same `.oxlintrc.json` as before — `react/rules-of-hooks: error`, `react/only-export-components: warn`. Run `npm run lint`.
+Same `.oxlintrc.json` as before — `react/rules-of-hooks: error`, `react/only-export-components: warn`. Run `npm run lint`. Note: `@types/react` and `@types/react-dom` are installed but the project is plain JS (no TypeScript) — these devDeps are unused and can be removed to shrink install time.
 
 ## 8. Environment Variables (Frontend)
 
 | Variable | Required | Default | Consumed in | Notes |
 |----------|----------|---------|-------------|-------|
-| `VITE_API_URL` | No | `http://localhost:8080/register` | `pages/Register.jsx` | Must start with `VITE_`. **Baked at build time.** |
+| `VITE_API_URL` | No | `http://localhost:8080/register` | `pages/Register.jsx` | Must start with `VITE_`. **Baked at build time.** ⚠️ Committed `dist/` was built **without** this and hardcodes `/api/user` — rebuild required. |
 
 - Set in a root `.env` (gitignored).
 - Login page doesn't use any API URL.
@@ -283,13 +286,16 @@ Same `.oxlintrc.json` as before — `react/rules-of-hooks: error`, `react/only-e
 | `npm run preview` | Serve built `dist/` locally | Verify prod build |
 | `npm run lint` | Runs Oxlint | CI / pre-commit |
 
+> ⚠️ **No `package-lock.json` is committed.** `npm install` resolves latest-compatible versions each time — builds are not reproducible. The suggested CI (`RUNBOOK Appendix H`) uses `npm ci`, which **requires** a lockfile and will fail today. Commit a lockfile (or change CI to `npm install`).
+
 ---
 
 ## Appendix A — File-by-File Reference Matrix
 
 | File | Role | Owner | Frequency |
 |------|------|-------|-----------|
-| `index.html` | HTML shell | Frontend | Rare |
+| `index.html` | HTML shell — `<title>` is `Test App` (built `dist/` says `react-gender-app`) | Frontend | Rare |
+| `dist/` | ⚠️ **Committed stale build** — hardcodes `/api/user`, ignores `VITE_API_URL` | — | Should be gitignored; rebuild before deploy |
 | `src/main.jsx` | Entry: StrictMode + BrowserRouter + `<App/>` | Frontend | Rare |
 | `src/App.jsx` | Route table (`/`, `/register`, `/login`) | Frontend | Occasional |
 | `src/mainApp.jsx` | **Unused** alternate entry rendering `<Register/>` | — | Should be deleted |

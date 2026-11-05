@@ -7,7 +7,9 @@ This template provides a minimal setup to get React working in Vite with HMR and
 
 ## Project
 React + Vite frontend with Go backend API.
-Three fields: name, age, gender. Values posted as JSON to backend `/api/user`.
+Three fields: name, age, gender (plus first/last/email/password in the UI). Values posted as JSON to backend `/register` (alias: `/api/user`).
+
+> ⚠️ The committed `dist/` directory is **stale**: it was built from an older `Register.jsx` and hardcodes `http://localhost:8080/api/user`, ignoring `VITE_API_URL`. **Do not deploy `dist/` as-is — run `npm run build` first.**
 
 ## Run
 Frontend:
@@ -23,7 +25,7 @@ go run main.go
 ```
 
 Env:
-`VITE_API_URL=http://localhost:8080/api/user`
+`VITE_API_URL=http://localhost:8080/register`
 
 Currently, two official plugins are available:
 

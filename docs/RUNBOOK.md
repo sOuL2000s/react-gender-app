@@ -35,6 +35,7 @@ npm run dev
 ```
 ✅ **No-DB mode sends CORS headers** (`Access-Control-Allow-Origin: *` set inside `simpleHandler`), so the browser can call `:8080` from `:3000`. You should get "Registration successful!" on a valid submit.
 ⚠️ **Caveat:** The origin is hardcoded to `*` — `FRONTEND_URL` is ignored in this mode. Fine for local dev; do not ship no-DB mode to a production browser surface.
+⚠️ **Caveat 2:** If you deploy the **committed `dist/`**, it hardcodes `http://localhost:8080/api/user` and ignores `VITE_API_URL`. Always `npm run build` before serving `dist/`.
 
 #### Option B — Postgres mode (recommended for anything resembling prod)
 ```bash
@@ -88,6 +89,7 @@ VITE_API_URL=https://api.example.com/register npm run build
   - **Netlify/Vercel:** enable SPA rewrite to `/index.html`.
   - **S3 + CloudFront:** configure error document → `/index.html`.
 - `VITE_API_URL` is **baked at build time**; changing it requires a rebuild.
+- ⚠️ The **committed `dist/` is stale**: it posts to `http://localhost:8080/api/user` and ignores `VITE_API_URL`. Never deploy the checked-in `dist/`; always run `npm run build`.
 
 ### Backend build
 ```bash
@@ -125,6 +127,9 @@ go build -o user-api .
 - ⚠️ No server timeouts / graceful shutdown — add `http.Server{ ReadHeaderTimeout:5s, ReadTimeout:10s, WriteTimeout:10s, IdleTimeout:60s }` + `signal.Notify` + `server.Shutdown(ctx)`.
 - ⚠️ No body size limit — `http.MaxBytesReader(w, r.Body, 1<<20)`.
 - ⚠️ `pgx.Connect` at startup — **no pooling** and no retry. For production, use `pgxpool.Pool` (`github.com/jackc/pgx/v5/pgxpool`) and a retry/backoff on connect.
+- ⚠️ **No startup retry:** if `pgx.Connect` fails once, the process silently runs in `simpleHandler` mode for its entire lifetime (no later promotion to DB mode). Restart required.
+- ⚠️ **`Vary: Origin` missing** in the DB-mode CORS wrapper — set it when `FRONTEND_URL` is not `*` to avoid CDN cache poisoning.
+- ⚠️ **`go.mod` drift:** `pgx/v5` is marked `// indirect` though imported directly. Run `go mod tidy`; the CI gate (`go mod tidy` + `git diff --exit-code go.mod go.sum`, Appendix H) fails today.
 - ⚠️ `ensureTable` uses `CREATE TABLE IF NOT EXISTS` — fine for fresh installs; **not** a real migration system. Add `golang-migrate` or similar when schema evolves.
 - 🔐 DB password lives in `DATABASE_URL` — keep it in a secret manager; `.env` is gitignored on both sides.
 - 📝 Logs to stdout — container-friendly.
@@ -146,6 +151,11 @@ go build -o user-api .
 - Backend vars: restart required to change.
 - `FRONTEND_URL` and `DATABASE_URL` may contain secrets → **never commit**; use env vars or secret manager.
 
+**Startup-behavior notes (read before prod):**
+- `DATABASE_URL` is evaluated **once at process start**. If the first `pgx.Connect` fails, the process runs `simpleHandler` (no persistence) for its entire lifetime — no retry, no promotion. Orchestrators should crash-loop the container rather than accept the fallback.
+- `VITE_API_URL` is baked into the bundle. The **committed `dist/`** was built without it and hardcodes `http://localhost:8080/api/user`. Always rebuild.
+- No `package-lock.json` is committed → `npm install` is non-deterministic; `npm ci` fails. Commit a lockfile before enabling the suggested CI.
+
 ---
 
 ## Appendix D — Troubleshooting & Common Scenarios
@@ -161,6 +171,9 @@ go build -o user-api .
 ### D.1b "`FRONTEND_URL` doesn't seem to apply in no-DB mode"
 - By design: `simpleHandler` hardcodes `Access-Control-Allow-Origin: *`, so `FRONTEND_URL` is ignored in no-DB mode. Use DB mode if you need origin restriction. See [TESTING.md §5 item 1](./TESTING.md#5-known-limitations--recommended-improvements) for the suggested fix.
 
+### D.11 "Deployed frontend always hits `localhost:8080/api/user`"
+- You are serving the **committed `dist/`**, which was built from an older `Register.jsx` and hardcodes `http://localhost:8080/api/user`. Run `npm run build` with your `VITE_API_URL` set, and redeploy. Consider removing `dist/` from version control.
+
 ### D.2 "Frontend `Error: HTTP 400`"
 - `age` empty/string. Send integer or fix the frontend coercion.
 
@@ -169,6 +182,7 @@ go build -o user-api .
 
 ### D.4 "Backend logs `DB connection failed: … using simple handler`"
 - `pgx.Connect` failed. Verify `DATABASE_URL` format (`postgres://user:pass@host:port/db?sslmode=disable`), network reachability, DB up. Server falls back to `simpleHandler`.
+- ⚠️ **There is no retry.** Even if the DB comes up a second later, this process stays in simple mode until restarted. Restart the process to re-attempt DB mode.
 
 ### D.5 "Health returns 404"
 - You're not in DB mode. `/health` only exists when a successful DB connection was made.
@@ -222,6 +236,8 @@ go run main.go
 DATABASE_URL='postgres://app:${DB_PASSWORD}@db.internal:5432/app?sslmode=require'
 FRONTEND_URL='https://app.example.com'
 PORT=8080
+# Reminder: if the first connection attempt fails, the process silently runs without DB
+# for its whole lifetime. Use an orchestrator restart policy so the container re-attempts.
 ```
 
 **Frontend build — production**
@@ -244,7 +260,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with: { node-version: 20 }
-      - run: npm ci            # or npm install if no lockfile
+      - run: npm install       # NOTE: no package-lock.json is committed, so `npm ci` will fail. Commit a lockfile, then switch to `npm ci`.
       - run: npm run lint
       - run: npm run build
 
@@ -268,6 +284,10 @@ jobs:
         with: { go-version: '1.25' }
       - working-directory: backend
         run: |
+          go mod tidy
+          # Fails if tidy changed go.mod/go.sum (e.g. pgx/v5 is currently // indirect).
+          # `--exit-code` returns 1 on any working-tree diff in these two files.
+          git diff --exit-code go.mod go.sum
           go vet ./...
           go build ./...
           # go test ./...   # enable once tests exist

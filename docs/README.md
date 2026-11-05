@@ -40,11 +40,14 @@ See [`docs/RUNBOOK.md`](./docs/RUNBOOK.md) for full setup, deployment, troublesh
 | Item | Value |
 |------|-------|
 | Frontend dev port | `3000` |
+| Committed `dist/` | ⚠️ **stale** — built from older `Register.jsx`, hardcodes `/api/user`, ignores `VITE_API_URL`. Rebuild before deploy. |
+| Root `index.html` title | `Test App` (built `dist/index.html` says `react-gender-app`) |
 | Backend port | `8080` (`PORT`) |
 | Backend endpoints | `POST /register`, `POST /api/user` (alias), `GET /health` (**DB mode only**) |
 | CORS | Always sent — `*` in no-DB mode; `FRONTEND_URL or *` in DB mode |
 | Auth | None (Login is simulated) |
 | DB | Optional Postgres; table `users` auto-created |
-| Known gaps | `email`/`password` not stored; `age` can be `''` → 400; `FRONTEND_URL` ignored in no-DB mode |
+| Known gaps | `email`/`password` not stored; `age` can be `''` → 400 (also accepts `0`); `FRONTEND_URL` ignored in no-DB mode; committed `dist/` is stale and mis-targeted; no startup retry for DB connect; `go.mod` marks direct dep `pgx/v5` as `// indirect`; no lockfile committed; `backend/.gitignore` misconfigured; `Login.jsx` has dead `try/catch`; `simpleHandler` is a no-op despite "log-only" wording |
+| Deploy rule | **Always `npm run build` before serving `dist/`** — the committed build targets `http://localhost:8080/api/user` and ignores `VITE_API_URL` |
 
-See [`docs/TESTING.md §5`](./docs/TESTING.md#5-known-limitations--recommended-improvements) for the full 26-item backlog.
+See [`docs/TESTING.md §5`](./docs/TESTING.md#5-known-limitations--recommended-improvements) for the full 36-item backlog.

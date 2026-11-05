@@ -27,7 +27,8 @@
   - `golang.org/x/text v0.41.0` — indirect.
 - **Stdlib used:** `context`, `encoding/json`, `log`, `net/http`, `os`.
 - Single file: `backend/main.go` (~165 lines).
-- **`backend/testbin`** — a committed binary artifact. Should be gitignored.
+- **`backend/testbin`** — a committed binary artifact. Should be gitignored. **`backend/.gitignore` does not currently list it** (it mistakenly ignores `package.json`, `node_modules/`, `dist/`).
+- **`go.mod` hygiene** — `github.com/jackc/pgx/v5` is imported directly by `main.go` but marked `// indirect` in `go.mod`. Run `go mod tidy` before CI; the suggested CI gate (`go mod tidy` followed by `git diff --exit-code go.mod go.sum` — see RUNBOOK Appendix H) fails today.
 
 ## 2. Server Entry & Dual-Mode Bootstrap (`main`)
 
@@ -182,7 +183,8 @@ type UserRequest struct {
 }
 ```
 - `email`, `password` absent → ignored by JSON decoder.
-- `Age int` strict.
+- `Age int` strict. Note: `age: 0` is accepted (no range validation) and inserts `age=0`.
+- `FirstName`/`LastName` are decoded but **never used**. The persisted `name` comes solely from the JSON `name` field. If a client omits `name`, the DB gets `name=""` → NOT NULL violation → `500`.
 
 ### `Response` (DB mode only)
 ```go
@@ -210,11 +212,11 @@ type Response struct {
 2. `OPTIONS` → `204 No Content` and returns.
 3. `POST` only, else `405`.
 4. Decode into `UserRequest`; error → `400 bad json`.
-5. Respond `200` `{"status":"ok","name":req.Name}`. **No logging, no persistence.**
+5. Respond `200` `{"status":"ok","name":req.Name}`. **No logging (despite "log-only" wording elsewhere), no persistence.** Data is silently dropped.
 
 ### `userHandler(db)` — DB mode (returns `http.HandlerFunc`)
 1. `POST` only, else `405`.
-2. Decode into `UserRequest`; error → `400 bad json`.
+2. Decode into `UserRequest`; error → `400 bad json`. **No body-size limit** — `json.NewDecoder(r.Body)` is unbounded. Add `http.MaxBytesReader(w, r.Body, 1<<20)`.
 3. `INSERT INTO users (name, age, gender) VALUES ($1,$2,$3) RETURNING id`.
 4. On insert error → log + `500 internal server error`.
 5. Respond `200` `{status:"ok", id, name}`.
@@ -242,7 +244,7 @@ Access-Control-Allow-Methods: POST, OPTIONS, GET
 Access-Control-Allow-Headers: Content-Type
 ```
 
-**Not set:** `Access-Control-Allow-Credentials`, `Access-Control-Max-Age`, `Vary: Origin`.
+**Not set:** `Access-Control-Allow-Credentials`, `Access-Control-Max-Age`, `Vary: Origin` (in DB mode, `Vary: Origin` is recommended when `FRONTEND_URL` is not `*` — otherwise CDNs may cache a response for the wrong origin). `Access-Control-Max-Age` is absent in no-DB mode → every preflight re-runs.
 
 > **Suggested improvement:** wrap the no-DB/connect-fail branches in the same CORS function used in DB mode, honoring `FRONTEND_URL`. That removes the current inconsistency where origin restriction silently doesn't apply in dev.
 
@@ -250,7 +252,7 @@ Access-Control-Allow-Headers: Content-Type
 
 | Variable | Required | Default | Consumed in | Effect |
 |----------|----------|---------|-------------|--------|
-| `DATABASE_URL` | No | (empty) | `main` | Empty → simple mode. Set → attempt Postgres. Example: `postgres://user:pass@localhost:5432/mydb?sslmode=disable` |
+| `DATABASE_URL` | No | (empty) | `main` | Empty → simple mode. Set → attempt Postgres **once at startup**; on failure the process **silently falls back to simple mode for its entire lifetime** (no retry). Example: `postgres://user:pass@localhost:5432/mydb?sslmode=disable` |
 | `PORT` | No | `8080` | `main` | Listening port |
 | `FRONTEND_URL` | No | `*` | CORS wrapper (DB mode only) | `Access-Control-Allow-Origin` value. **Ignored in no-DB mode.** |
 
@@ -328,6 +330,8 @@ SELECT id, name, age, gender, created_at FROM users ORDER BY id DESC;
 | DB insert error | DB | 500 | `internal server error` |
 | Health | DB | 200 | `{"status":"healthy"}` |
 | Health | No-DB | 404 | (mux default) |
+| Valid POST but `name` omitted | DB | 500 | `internal server error` (NOT NULL violation — `UserRequest.FirstName/LastName` are not used to build `name`) |
+| `age: 0` | both | 200 | accepted (no range validation) |
 
 **Curl cheat-sheet**
 
@@ -357,4 +361,14 @@ curl -i -X POST localhost:8080/register \
 curl -i -X OPTIONS localhost:8080/register \
   -H 'Origin: http://localhost:3000' \
   -H 'Access-Control-Request-Method: POST'
+
+# Empty name (DB mode only) — expect 500 from NOT NULL violation
+curl -i -X POST localhost:8080/register \
+  -H 'Content-Type: application/json' \
+  -d '{"age":25,"gender":"male"}'
+
+# age = 0 — currently accepted despite "positive integer" guidance
+curl -i -X POST localhost:8080/register \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"Zero","age":0,"gender":"male"}'
 ```

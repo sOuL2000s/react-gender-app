@@ -67,6 +67,8 @@
 - [ ] `age` as string/empty → `400 bad json`.
 - [ ] `GET /health` → **404**.
 - [ ] Response headers include `Access-Control-Allow-Origin: *` (verifies inline CORS in `simpleHandler`).
+- [ ] **No log line is emitted on a valid POST** (`simpleHandler` is a no-op despite "log-only" wording).
+- [ ] **Deploy-parity check:** running the committed `dist/` POSTs to `http://localhost:8080/api/user`, not `/register` — verify this and never deploy `dist/` without rebuilding.
 
 ### DB mode (`DATABASE_URL` set, reachable)
 - [ ] Server logs `Listening on :8080` (no "no DB" suffix).
@@ -113,6 +115,9 @@
 ### Backend (Go `net/http/httptest`)
 - `simpleHandler`:
   - POST valid → 200, body `{status:"ok",name}`.
+  - Assert **no log line** is written (documents current no-op behavior; flip this test when logging is added).
+  - Assert `age: 0` is accepted (documents missing range validation — flip when validation is added).
+  - Assert empty `name` triggers `500` in DB mode (NOT NULL) — documents the missing-name footgun.
   - GET → 405 `method not allowed`.
   - Malformed JSON → 400 `bad json`.
   - `age` as string → 400.
@@ -128,7 +133,7 @@
 ### Frontend (Vitest + React Testing Library)
 - Router: `/` redirects to `/register`; `/login` renders Sign In.
 - `RegisterPage`: typing updates inputs; submit calls `fetch` with expected URL/headers/body; success clears fields; error shows `Error:`.
-- `LoginPage`: submit triggers 1s delay then success; **asserts `fetch` is NOT called**.
+- `LoginPage`: submit triggers 1s delay then success; **asserts `fetch` is NOT called**; asserts the `try/catch` around the delay is unreachable (dead code — remove it).
 - Age coercion: empty `age` → payload `age` should ideally be a number or omitted (current: `""`).
 - Nav links between pages work.
 
@@ -141,7 +146,7 @@
 
 | # | Area | Issue | Recommendation |
 |---|------|-------|----------------|
-| 1 | **Backend / CORS hardening** | `simpleHandler` (no-DB and connect-fail branches) hardcodes `Access-Control-Allow-Origin: *` and ignores `FRONTEND_URL`. Functionally works, but origin is unrestricted and inconsistent with DB mode. | Extract CORS to a reusable wrapper, honor `FRONTEND_URL` in all branches (default `*` for dev), and drop the inline headers from `simpleHandler`. |
+| 1 | **Backend / CORS hardening** | `simpleHandler` (no-DB and connect-fail branches) hardcodes `Access-Control-Allow-Origin: *` and ignores `FRONTEND_URL`. Functionally works, but origin is unrestricted and inconsistent with DB mode. DB-mode wrapper also lacks `Vary: Origin`. No `Access-Control-Max-Age` in no-DB mode → every preflight re-runs. | Extract CORS to a reusable wrapper, honor `FRONTEND_URL` in all branches (default `*` for dev), add `Vary: Origin` and `Access-Control-Max-Age`, and drop the inline headers from `simpleHandler`. |
 | 2 | Backend / Frontend | Frontend sends `email` + `password` but backend `UserRequest` has no such fields → silently dropped | Add fields + `password_hash` column; or remove them from frontend UI (a login/register without credentials is misleading) |
 | 3 | Frontend | `age` sends `""` when empty → backend `400 bad json` | Coerce `age` to number or omit; add required positive integer |
 | 4 | Backend | `Login` has no server-side counterpart — not real auth | Add `POST /login`, password hashing (bcrypt/argon2), sessions/JWT; or clearly label the page as a demo |
@@ -164,9 +169,19 @@
 | 21 | Testing | No automated tests | Add Go `httptest` + Vitest/RTL (see §4) |
 | 22 | Security | No rate limiting, no auth, no CSRF, no HTTPS assumption | Add at the edge (LB/WAF), and password hashing for real auth |
 | 23 | Version drift | `go.mod` declares `go 1.25.0` — ensure the build image uses ≥ 1.25 | Pin `golang:1.25` in Dockerfile; update CI matrix |
-| 24 | Deps | `pgx/v5` pulls `golang.org/x/text` indirect — keep `go mod tidy` in CI | Add `go mod tidy -diff` check |
+| 24 | Deps | `pgx/v5` pulls `golang.org/x/text` indirect — keep `go mod tidy` in CI | Add a `go mod tidy` + `git diff --exit-code go.mod go.sum` gate (see RUNBOOK Appendix H) |
 | 25 | Backend / formatting | `main.go` DB-connect-failure branch is under-indented (cosmetic) | Run `gofmt -w backend/`; CI enforces via `gofmt check` ([RUNBOOK.md Appendix H](./RUNBOOK.md#appendix-h--suggested-ci-pipeline-scaffold)) |
 | 26 | Backend / CORS parity | `simpleHandler` (no-DB) → `*`; CORS wrapper (DB) → `FRONTEND_URL`. Behavior differs by mode — subtle. | Unify: same helper, same source (`FRONTEND_URL`), same default. Documented in [ARCHITECTURE.md §6](./ARCHITECTURE.md#6-cross-cutting-gaps-read-first) and [BACKEND-API.md §6](./BACKEND-API.md#6-cors). |
+| 27 | **Build artifact** | Committed `dist/` is **stale**: hardcodes `http://localhost:8080/api/user`, ignores `VITE_API_URL`, title `react-gender-app` (root `index.html` is `Test App`). | Delete `dist/` from VCS, add to `.gitignore`, always `npm run build` before deploy. Documented in [ARCHITECTURE.md §6 item 7](./ARCHITECTURE.md#6-cross-cutting-gaps-read-first). |
+| 28 | **Backend / startup** | If `pgx.Connect` fails once at startup, the process runs `simpleHandler` forever — no retry/promotion. | Retry with backoff; or crash-loop so the orchestrator retries. |
+| 29 | **Backend / validation** | `age: 0` accepted (no range check); `name` empty if client omits it → DB `NOT NULL` violation → 500. | Validate `name != ""`, `1 <= age <= 120`, gender ∈ {male,female,other}. |
+| 30 | **Backend / body limit** | `json.NewDecoder(r.Body)` unbounded — a malicious body can exhaust memory. | `r.Body = http.MaxBytesReader(w, r.Body, 1<<20)`. |
+| 31 | **Backend / go.mod** | `pgx/v5` marked `// indirect` though imported directly. | `go mod tidy`; add a `go mod tidy` + `git diff --exit-code go.mod go.sum` gate to CI (see RUNBOOK Appendix H). |
+| 32 | **Backend / .gitignore** | `backend/.gitignore` copies the frontend's (ignores `package.json`, `node_modules/`, `dist/`) and does **not** ignore `testbin`. | Replace with a Go-appropriate ignore (`*.env`, `testbin`, `user-api`); commit `testbin` removal. |
+| 33 | **Frontend / dead code** | `Login.jsx` `try/catch` is unreachable (the `setTimeout` promise never rejects). | Remove the `try/catch`. |
+| 34 | **Frontend / deps** | `@types/react` + `@types/react-dom` are installed but the project is plain JS (no TS). | Remove the unused `@types/*` devDeps. |
+| 35 | **Frontend / lockfile** | No `package-lock.json` committed; suggested CI uses `npm ci` which requires one. | Commit a lockfile (or switch CI to `npm install`). |
+| 36 | **Frontend / CSS conflict** | `index.css` (`#root` 1126px bordered column) and `App.css` (`.auth-container` full-bleed) both target `body`/`#root`; the built CSS concatenates them. | Drop `index.css` or scope it; verify visually at mobile widths. |
 
 ## Appendix E — Definition of Done (Per Feature)
 
@@ -177,6 +192,8 @@
 - [ ] If a new env var was added, documented in [BACKEND-API.md §7](./BACKEND-API.md#7-environment-variables) and [RUNBOOK.md Appendix C](./RUNBOOK.md#appendix-c--environment-variable-reference-all-contexts).
 - [ ] API Reference Card ([BACKEND-API.md Appendix B](./BACKEND-API.md#appendix-b--api-reference-card)) updated for endpoint/schema changes.
 - [ ] Manual QA checklists (§1, §2, §3) re-run and passed.
+- [ ] `dist/` rebuilt from current `src/` (or excluded from the commit) — **never commit stale build output**.
+- [ ] `go mod tidy` produces no diff (no `// indirect` drift).
 - [ ] New automated tests added and green in CI.
 - [ ] [RUNBOOK.md Appendix D](./RUNBOOK.md#appendix-d--troubleshooting--common-scenarios) updated for new failure modes.
 - [ ] [NON-TECHNICAL.md](./NON-TECHNICAL.md) updated if user-facing behavior changed.
@@ -186,7 +203,7 @@
 ## Appendix I — Onboarding Path (New Contributor, 30 minutes)
 
 1. **Read** [ARCHITECTURE.md §1–§4](./ARCHITECTURE.md) (10 min) — overall shape + dual backend modes + data flow + CORS story.
-2. **Run** [RUNBOOK.md §1 Option B](./RUNBOOK.md#option-b--postgres-mode-recommended-for-anything-resembling-prod) (10 min) — DB mode gives the smoothest end-to-end path.
+2. **Run** [RUNBOOK.md §1 Option B](./RUNBOOK.md#option-b--postgres-mode-recommended-for-anything-resembling-prod) (10 min) — DB mode gives the smoothest end-to-end path. ⚠️ Before touching `dist/`, run `npm run build` — the committed build is stale (hardcodes `/api/user`, ignores `VITE_API_URL`).
 3. **Skim** [FRONTEND.md §3](./FRONTEND.md#3-pages) (Register + Login) and [BACKEND-API.md §5](./BACKEND-API.md#5-handler-logic) (simple vs DB handlers) (5 min).
 4. **Skim** [BACKEND-API.md Appendix B](./BACKEND-API.md#appendix-b--api-reference-card) and [RUNBOOK.md Appendix C](./RUNBOOK.md#appendix-c--environment-variable-reference-all-contexts) (5 min) — full contract surface.
 5. **Pick a task** from §5 above and follow Appendix E when done.

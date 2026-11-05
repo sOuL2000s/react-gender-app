@@ -47,7 +47,7 @@ The **React Gender App** (UI branded "Inovix Labs") is a small full-stack demo t
 ┌────────────────────────┐     POST /register (JSON)      ┌────────────────────────┐
 │ React (Vite :3000)     │  ──────────────────────────►   │ Go (net/http :8080)    │
 │  /register, /login     │   + CORS headers (from handler)│  simpleHandler         │
-│  BrowserRouter         │  ◄──────────────────────────   │  (log-only, no DB)     │
+│  BrowserRouter         │  ◄──────────────────────────   │  (no-op: no log, no DB)│
 └────────────────────────┘   200 {status:"ok", name}      └────────────────────────┘
 ```
 
@@ -133,9 +133,11 @@ START
 ```
 .
 ├── backend/                     # Go API server
-│   ├── .gitignore               # Ignores .env, dist, node_modules, package.json
-│   ├── testbin                  # ⚠️ committed build artifact (should be gitignored)
+│   ├── .gitignore               # ⚠️ Copied from frontend: ignores .env, dist/, node_modules/, package.json
+│   │                            #    (irrelevant to Go) and does NOT ignore testbin. Should be rewritten.
+│   ├── testbin                  # ⚠️ committed build artifact — NOT in backend/.gitignore today. Remove + ignore.
 │   ├── go.mod                   # module github.com/example/user-api; go 1.25.0; pgx/v5
+│   │                            # ⚠️ pgx/v5 is a DIRECT import but marked // indirect — run `go mod tidy`
 │   ├── go.sum                   # Checksums for pgx and transitive deps
 │   └── main.go                  # Dual-mode server: simpleHandler (with inline CORS) OR userHandler(db)
 │
@@ -166,7 +168,9 @@ START
 │   ├── TESTING.md
 │   └── NON-TECHNICAL.md
 │
-├── index.html                   # Vite HTML entry
+├── index.html                   # Vite HTML entry — <title> is "Test App" (NOT "react-gender-app")
+├── dist/                        # ⚠️ COMMITTED stale build: hardcodes http://localhost:8080/api/user
+│                                #    (ignores VITE_API_URL), title "react-gender-app". Rebuild before deploy.
 ├── vite.config.js               # React plugin; dev port 3000; no proxy
 ├── .oxlintrc.json               # Oxlint rules (React + Oxc)
 ├── .gitignore                   # Ignores node_modules, dist, logs, .env, editors
@@ -180,12 +184,16 @@ START
 
 These affect everyone, so they are surfaced at the top level:
 
-1. **Origin hardening in no-DB mode** — `simpleHandler` always emits `Access-Control-Allow-Origin: *`, ignoring `FRONTEND_URL`. This is a *security/consistency* gap (not a browser-blocks you gap like before). Mitigation: wrap no-DB mux in the same CORS function used in DB mode and drop `*`.
+1. **Origin hardening in no-DB mode** — `simpleHandler` always emits `Access-Control-Allow-Origin: *`, ignoring `FRONTEND_URL`. This is a *security/consistency* gap (not a browser-blocks you gap like before). Mitigation: wrap no-DB mux in the same CORS function used in DB mode and drop `*`. Also add `Vary: Origin` in the DB-mode wrapper (missing today) so CDNs don't cache a response for the wrong origin.
 2. **Frontend/backend field mismatch** — frontend sends `email` & `password`; backend `UserRequest` ignores both. Don't assume they're persisted.
 3. **`age` may be `''`** when the form is empty (frontend), causing `400 bad json` from the backend.
 4. **Two UIs coexisting** — `index.css` (legacy) vs `App.css` (current theme). Both target `body`, `#root`; visual conflicts possible.
 5. **`src/mainApp.jsx` and `backend/testbin`** are stray/leftover files — should be removed or gitignored.
 6. **Inconsistent formatting** — `main.go` DB-connect-failure branch is under-indented; run `gofmt -w backend/`. See [TESTING.md §5 item 25](./TESTING.md#5-known-limitations--recommended-improvements).
+7. **Committed `dist/` is stale and mis-targeted** — built from an older `Register.jsx`; hardcodes `http://localhost:8080/api/user`, ignores `VITE_API_URL`; title is `react-gender-app` (root is `Test App`). Deploying it as-is hits the alias endpoint on localhost. Rebuild (`npm run build`) before any deploy; consider removing `dist/` from VCS.
+8. **`simpleHandler` "log-only" is actually a no-op** — the comments/docs say "log-only" but the handler contains no `log.Print`. Data is silently dropped. Either add a log line or rename the description everywhere.
+9. **`go.mod` marks `pgx/v5` as `// indirect`** though `main.go` imports it directly. `go mod tidy` would correct this; the suggested CI (`go mod tidy` + `git diff --exit-code go.mod go.sum`, RUNBOOK Appendix H) fails today.
+10. **`backend/.gitignore` is a copy of the frontend's** — ignores `package.json`, `node_modules/`, `dist/` (irrelevant to Go) and does **not** ignore `testbin`.
 
 ---
 
